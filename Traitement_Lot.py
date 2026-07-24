@@ -19,6 +19,7 @@ contrôle par contact.
 import io
 import re
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+from pathlib import Path
 
 import openpyxl
 import pandas as pd
@@ -388,10 +389,12 @@ if skipped:
 # Fichier Synthèse mis à jour, prêt à télécharger
 buf_synth = io.BytesIO()
 wb_write.save(buf_synth)
+synth_path = Path(synth_file.name)
+synth_v2_name = f"{synth_path.stem} V2{synth_path.suffix}"
 st.download_button(
     "⬇️ Télécharger la Synthèse mise à jour",
     data=buf_synth.getvalue(),
-    file_name=f"MAJ_{synth_file.name}",
+    file_name=synth_v2_name,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
