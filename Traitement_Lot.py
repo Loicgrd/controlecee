@@ -166,7 +166,8 @@ if missing:
     st.error("Colonnes introuvables dans le fichier : " + ", ".join(missing))
     st.stop()
 
-# Lignes dont la conclusion d'audit est renseignée
+# Lignes dont la conclusion du contrôle sur site est renseignée (utilisées aussi pour le
+# calcul de surface à l'étape 2, où seul le contrôle sur site mesure une surface).
 rows = []
 for r in range(header_row + 1, ws_read.max_row + 1):
     ref_val = ws_read.cell(row=r, column=col_ref).value
@@ -177,7 +178,21 @@ for r in range(header_row + 1, ws_read.max_row + 1):
         continue
     rows.append(r)
 
-st.success(f"{len(rows)} ligne(s) avec conclusion d'audit renseignée.")
+# Lignes dont la conclusion du contrôle par contact est renseignée (affichage uniquement).
+rows_contact = []
+for r in range(header_row + 1, ws_read.max_row + 1):
+    ref_val = ws_read.cell(row=r, column=col_ref).value
+    concl_val = ws_read.cell(row=r, column=col_conclusion_contact).value
+    if ref_val is None or str(ref_val).strip() == "":
+        continue
+    if concl_val is None or str(concl_val).strip() == "":
+        continue
+    rows_contact.append(r)
+
+st.success(
+    f"{len(rows)} ligne(s) avec conclusion du contrôle sur site renseignée, "
+    f"{len(rows_contact)} ligne(s) avec conclusion du contrôle par contact renseignée."
+)
 
 # --------------------------------------------------------------------------------------
 # Étape 1 — Tableau à copier dans Odicée
@@ -186,37 +201,52 @@ st.success(f"{len(rows)} ligne(s) avec conclusion d'audit renseignée.")
 st.header(
     "1. Tableau à copier-coller dans Odicée",
     help=(
-        "Ligne conservée si les deux conditions sont vraies :\n"
-        "- « REFERENCE interne de l'opération » est renseignée\n"
-        "- « Conclusion de l'audit » est renseignée (Satisfaisant / Non satisfaisant / ...)"
+        "Deux blocs, un par type de contrôle, pour un copier-coller séparé :\n"
+        "- Contrôle sur site : « REFERENCE interne » et « Conclusion du contrôle sur site » renseignées\n"
+        "- Contrôle par contact : « REFERENCE interne » et « Conclusion du contrôle par contact » renseignées"
     ),
 )
 
-odicee_data = []
-for r in rows:
-    odicee_data.append(
-        {
-            "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
-            "Conclusion de l'audit": ws_read.cell(row=r, column=col_conclusion).value,
-            "Conclusion du contrôle par contact": ws_read.cell(
-                row=r, column=col_conclusion_contact
-            ).value,
-        }
-    )
-df_odicee = pd.DataFrame(odicee_data)
+st.subheader("Bloc — Contrôle sur site")
+odicee_site_data = [
+    {
+        "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
+        "Conclusion du contrôle sur site": ws_read.cell(row=r, column=col_conclusion).value,
+    }
+    for r in rows
+]
 st.dataframe(
-    df_odicee,
+    pd.DataFrame(odicee_site_data),
     use_container_width=True,
     hide_index=True,
     column_config={
         "REFERENCE interne de l'opération": st.column_config.Column(
-            help="Critère de tri : ligne affichée seulement si cette cellule ET « Conclusion de l'audit » sont non vides."
+            help="Critère de tri : ligne affichée seulement si cette cellule ET « Conclusion du contrôle sur site » sont non vides."
         ),
-        "Conclusion de l'audit": st.column_config.Column(
-            help="C'est la présence d'une valeur ici (Satisfaisant / Non satisfaisant / ...) qui décide si la ligne apparaît dans ce tableau."
+        "Conclusion du contrôle sur site": st.column_config.Column(
+            help="Colonne source dans le fichier : « Conclusion de l'audit ». C'est sa présence qui décide si la ligne apparaît dans ce bloc."
+        ),
+    },
+)
+
+st.subheader("Bloc — Contrôle par contact")
+odicee_contact_data = [
+    {
+        "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
+        "Conclusion du contrôle par contact": ws_read.cell(row=r, column=col_conclusion_contact).value,
+    }
+    for r in rows_contact
+]
+st.dataframe(
+    pd.DataFrame(odicee_contact_data),
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "REFERENCE interne de l'opération": st.column_config.Column(
+            help="Critère de tri : ligne affichée seulement si cette cellule ET « Conclusion du contrôle par contact » sont non vides."
         ),
         "Conclusion du contrôle par contact": st.column_config.Column(
-            help="Affichée à titre indicatif pour cette même ligne ; ne participe pas au filtre."
+            help="C'est la présence d'une valeur ici qui décide si la ligne apparaît dans ce bloc."
         ),
     },
 )
@@ -375,12 +405,17 @@ if any_decrease:
 
     rows_to_apply = [c for c in changes if c["Surface retenue"] != c["Surface déclarée"]]
 
-    dossiers = sorted({c["Dossier"] for c in rows_to_apply if c["Dossier"]})
-    if dossiers:
+    dossier_fiches = {}
+    for c in rows_to_apply:
+        if c["Dossier"]:
+            dossier_fiches.setdefault(c["Dossier"], set()).add(str(c["Fiche"]).strip())
+
+    if dossier_fiches:
         st.markdown(
             "**Accès direct au(x) dossier(s) concerné(s) par une surface modifiée :**  \n"
             + "  \n".join(
-                f"- [{numero}](https://odicee.edf.fr/dossiers/{numero})" for numero in dossiers
+                f"- [{numero} ({', '.join(sorted(fiches))})](https://odicee.edf.fr/dossiers/{numero})"
+                for numero, fiches in sorted(dossier_fiches.items())
             )
         )
 
