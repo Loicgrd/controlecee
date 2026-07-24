@@ -139,6 +139,8 @@ headers = build_header_map(ws_read, header_row)
 col_ref = find_col(headers, "REFERENCE interne de l'opération")
 col_conclusion = find_col(headers, "Conclusion de l'audit")
 col_conclusion_contact = find_col(headers, "Conclusion du contrôle par contact")
+col_commentaires_generaux = find_col(headers, "Commentaires généraux")
+col_non_qualite = find_col(headers, "Commentaire sur le type de non qualité relevée")
 col_fiche = find_col(headers, "REFERENCE DE LA FICHE")
 col_decl = find_col(headers, "Surface déclarée dans l'AH/facture")
 col_mesuree = find_col(headers, "Surface mesurée par le bureau de contrôle")
@@ -152,6 +154,8 @@ required = {
     "REFERENCE interne de l'opération": col_ref,
     "Conclusion de l'audit": col_conclusion,
     "Conclusion du contrôle par contact": col_conclusion_contact,
+    "Commentaires généraux": col_commentaires_generaux,
+    "Commentaire sur le type de non qualité relevée": col_non_qualite,
     "REFERENCE DE LA FICHE": col_fiche,
     "Surface déclarée dans l'AH/facture": col_decl,
     "Surface mesurée par le bureau de contrôle": col_mesuree,
@@ -212,6 +216,7 @@ odicee_site_data = [
     {
         "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
         "Conclusion du contrôle sur site": ws_read.cell(row=r, column=col_conclusion).value,
+        "Commentaires généraux": ws_read.cell(row=r, column=col_commentaires_generaux).value,
     }
     for r in rows
 ]
@@ -226,6 +231,9 @@ st.dataframe(
         "Conclusion du contrôle sur site": st.column_config.Column(
             help="Colonne source dans le fichier : « Conclusion de l'audit ». C'est sa présence qui décide si la ligne apparaît dans ce bloc."
         ),
+        "Commentaires généraux": st.column_config.Column(
+            help="Affichée telle quelle (vide si non renseignée)."
+        ),
     },
 )
 
@@ -234,6 +242,7 @@ odicee_contact_data = [
     {
         "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
         "Conclusion du contrôle par contact": ws_read.cell(row=r, column=col_conclusion_contact).value,
+        "Commentaire sur le type de non qualité relevée": ws_read.cell(row=r, column=col_non_qualite).value,
     }
     for r in rows_contact
 ]
@@ -247,6 +256,9 @@ st.dataframe(
         ),
         "Conclusion du contrôle par contact": st.column_config.Column(
             help="C'est la présence d'une valeur ici qui décide si la ligne apparaît dans ce bloc."
+        ),
+        "Commentaire sur le type de non qualité relevée": st.column_config.Column(
+            help="Renseigné en général quand la conclusion est « Non satisfaisant » ; affiché tel quel (vide si non renseigné)."
         ),
     },
 )
