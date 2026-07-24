@@ -18,6 +18,7 @@ contrôle par contact.
 
 import io
 import re
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 import openpyxl
 import pandas as pd
@@ -92,6 +93,17 @@ def fmt_like(original_value, new_value):
     if isinstance(original_value, str):
         return f"{new_value:g}"
     return new_value
+
+
+def round_half_up(x):
+    """Arrondi à l'entier le plus proche, avec .5 arrondi vers le haut (contrairement à
+    round() de Python qui arrondit .5 vers l'entier pair le plus proche)."""
+    return int(Decimal(str(x)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def round_ceiling(x):
+    """Arrondi systématiquement à l'entier supérieur."""
+    return int(Decimal(str(x)).quantize(Decimal("1"), rounding=ROUND_CEILING))
 
 
 # --------------------------------------------------------------------------------------
@@ -222,8 +234,9 @@ st.header(
         "1. Si Surface mesurée < Surface déclarée → retenue = Surface mesurée\n"
         "2. Sinon, si Écart > 10 % → retenue = Surface estimée\n"
         "3. Sinon → retenue = Surface déclarée\n\n"
-        "Si la surface retenue diffère de la surface déclarée, les volumes HORS PRECARITE et "
-        "PRECARITE sont recalculés au même prorata."
+        "Si la surface retenue diffère de la surface déclarée, les volumes sont recalculés "
+        "au même prorata : VOLUME HORS PRECARITE est arrondi à l'entier supérieur, puis "
+        "VOLUME PRECARITE = total recalculé (arrondi normalement) − VOLUME HORS PRECARITE."
     ),
 )
 st.caption(
@@ -244,16 +257,15 @@ for r in rows:
     ecart = to_number(ws_read.cell(row=r, column=col_ecart).value)
     ref_val = ws_read.cell(row=r, column=col_ref).value
 
-    if declaree is None or mesuree is None:
-        skipped.append({"REFERENCE interne": ref_val, "Fiche": fiche_val, "Motif": "surface déclarée/mesurée non exploitable"})
+    if declaree is None:
+        skipped.append({"REFERENCE interne": ref_val, "Fiche": fiche_val, "Motif": "surface déclarée absente/non exploitable"})
         continue
 
-    if mesuree < declaree:
+    # Par défaut : surface déclarée. Uniquement remplacée si mesurée < déclarée, ou si
+    # l'écart est strictement supérieur à 10 % (auquel cas on prend l'estimée).
+    if mesuree is not None and mesuree < declaree:
         retenue = mesuree
-    elif ecart is not None and ecart > 10:
-        if estimee is None:
-            skipped.append({"REFERENCE interne": ref_val, "Fiche": fiche_val, "Motif": "écart > 10% mais surface estimée absente"})
-            continue
+    elif ecart is not None and ecart > 10 and estimee is not None:
         retenue = estimee
     else:
         retenue = declaree
@@ -268,15 +280,26 @@ for r in rows:
         cell_prec = ws_write.cell(row=r, column=col_vol_prec)
         old_hp = to_number(ws_read.cell(row=r, column=col_vol_hp).value)
         old_prec = to_number(ws_read.cell(row=r, column=col_vol_prec).value)
-        if old_hp is not None:
-            cell_hp.value = round(old_hp * ratio)
-        if old_prec is not None:
-            cell_prec.value = round(old_prec * ratio)
+        if old_hp is not None and old_prec is not None:
+            # VOLUME HORS PRECARITE arrondi à l'entier supérieur, VOLUME PRECARITE déduit
+            # du total (arrondi normalement) moins la valeur HORS PRECARITE déjà arrondie,
+            # pour que la somme des deux reste cohérente avec le total recalculé.
+            new_hp = round_ceiling(old_hp * ratio)
+            new_total = round_half_up((old_hp + old_prec) * ratio)
+            new_prec = new_total - new_hp
+            cell_hp.value = new_hp
+            cell_prec.value = new_prec
+        elif old_hp is not None:
+            cell_hp.value = round_half_up(old_hp * ratio)
+        elif old_prec is not None:
+            cell_prec.value = round_half_up(old_prec * ratio)
 
     id_lot = str(ref_val).rsplit("-", 1)[-1].strip()
+    dossier = str(ref_val).split("-", 1)[0].strip()
     changes.append(
         {
             "REFERENCE interne": ref_val,
+            "Dossier": dossier,
             "ID lot de travaux": id_lot,
             "Fiche": ws_read.cell(row=r, column=col_fiche).value,
             "Surface déclarée": declaree,
@@ -296,6 +319,9 @@ if changes:
         use_container_width=True,
         hide_index=True,
         column_config={
+            "Dossier": st.column_config.Column(
+                help="Partie avant le « - » de REFERENCE interne de l'opération : sert de NUMERODOSSIER pour le lien Odicée à l'étape 3."
+            ),
             "Fiche": st.column_config.Column(
                 help="Seules les fiches BAR-EN-101, BAR-EN-102, BAR-EN-103 et BAR-EN-105 sont retenues pour ce calcul."
             ),
@@ -348,6 +374,15 @@ if any_decrease:
     )
 
     rows_to_apply = [c for c in changes if c["Surface retenue"] != c["Surface déclarée"]]
+
+    dossiers = sorted({c["Dossier"] for c in rows_to_apply if c["Dossier"]})
+    if dossiers:
+        st.markdown(
+            "**Accès direct au(x) dossier(s) concerné(s) par une surface modifiée :**  \n"
+            + "  \n".join(
+                f"- [{numero}](https://odicee.edf.fr/dossiers/{numero})" for numero in dossiers
+            )
+        )
 
     bar_files = st.file_uploader(
         "Importer la ou les fiches BAR (ex : T155142_BAR-EN-102_A14_1.xlsx)",
