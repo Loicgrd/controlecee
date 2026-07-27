@@ -64,11 +64,18 @@ def build_header_map(ws, header_row):
     return headers
 
 
+def _loosen(s):
+    """Variante encore plus tolérante utilisée uniquement pour le rapprochement des
+    en-têtes de colonnes : les tirets et espaces sont traités de façon équivalente
+    (ex : 'non-qualité' == 'non qualité')."""
+    return re.sub(r"[\s\-]+", " ", s).strip().lower()
+
+
 def find_col(headers, prefix):
     """Retourne l'indice de la 1ère colonne dont l'en-tête commence par `prefix`."""
-    prefix_n = normalize(prefix).lower()
+    prefix_n = _loosen(normalize(prefix))
     for c, h in headers.items():
-        if h.lower().startswith(prefix_n):
+        if _loosen(h).startswith(prefix_n):
             return c
     return None
 
