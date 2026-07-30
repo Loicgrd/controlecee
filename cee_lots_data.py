@@ -10,6 +10,7 @@ et un seuil "par contact" (en %). Certaines fiches n'ont qu'un des deux types de
 """
 
 from datetime import date
+import re
 
 # --------------------------------------------------------------------------------------
 # Table de l'annexe (arrêté du 27 juillet 2026)
@@ -232,12 +233,23 @@ def parse_date_fr(value):
     return None
 
 
+def extract_fiche_code(raw):
+    """Extrait le code fiche propre (ex : 'BAR-EN-101') d'une valeur brute de colonne
+    'REFERENCE DE LA FICHE', qui peut porter un suffixe de variante interne
+    (ex : 'BAR-EN-101_VA33_3' -> 'BAR-EN-101'). Retourne None si rien ne matche."""
+    if not raw:
+        return None
+    m = re.match(r"^([A-Z]{2,5}-[A-Z]{2}-\d{3}(?:-SE)?)", str(raw).strip().upper())
+    return m.group(1) if m else str(raw).strip().upper()
+
+
 def get_seuils_fiche(fiche, date_engagement):
     """Retourne (seuil_site, seuil_contact) en % pour une fiche et une date d'engagement
     données, ou (None, None) si la fiche ou la période n'est pas trouvée dans la table."""
     if not fiche or not date_engagement:
         return None, None
-    periodes = SEUILS_PAR_FICHE.get(fiche.strip().upper())
+    code = extract_fiche_code(fiche)
+    periodes = SEUILS_PAR_FICHE.get(code)
     if not periodes:
         return None, None
     for debut, fin, seuil_site, seuil_contact in periodes:

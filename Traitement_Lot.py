@@ -166,25 +166,38 @@ col_ecart = find_col(headers, "Écart entre surface mesurée")
 col_vol_hp = find_col(headers, "VOLUME HORS PRECARITE")
 col_vol_prec = find_col(headers, "VOLUME PRECARITE")
 
+
+def cell_or_none(row, col):
+    """Lit une cellule seulement si la colonne existe dans ce fichier ; None sinon.
+    Utile pour les colonnes optionnelles (toutes les fiches n'ont pas de contrôle par
+    contact, ni de colonnes de surface — certaines mesurent une longueur à la place)."""
+    return ws_read.cell(row=row, column=col).value if col else None
+
+
+# Certaines fiches n'ont pas de contrôle par contact (100% sur site), et certaines fiches
+# (réseaux isolés, mesurées en longueur) n'ont pas du tout de colonnes de surface : ces
+# groupes de colonnes sont donc optionnels, pas bloquants pour le reste de l'application.
+has_contact = col_conclusion_contact is not None
+has_surface_cols = all([col_decl, col_mesuree, col_estimee, col_retenue, col_ecart, col_vol_hp, col_vol_prec])
+
 required = {
     "REFERENCE interne de l'opération": col_ref,
     "Conclusion de l'audit": col_conclusion,
-    "Conclusion du contrôle par contact": col_conclusion_contact,
-    "Commentaires généraux": col_commentaires_generaux,
-    "Commentaire sur le type de non qualité relevée": col_non_qualite,
     "REFERENCE DE LA FICHE": col_fiche,
-    "Surface déclarée dans l'AH/facture": col_decl,
-    "Surface mesurée par le bureau de contrôle": col_mesuree,
-    "Surface estimée par le bureau de contrôle": col_estimee,
-    "Surface retenue dans la demande": col_retenue,
-    "Écart entre surface mesurée...": col_ecart,
-    "VOLUME HORS PRECARITE": col_vol_hp,
-    "VOLUME PRECARITE": col_vol_prec,
 }
 missing = [name for name, c in required.items() if c is None]
 if missing:
     st.error("Colonnes introuvables dans le fichier : " + ", ".join(missing))
     st.stop()
+
+if not has_contact:
+    st.info("Ce fichier n'a pas de colonne « Conclusion du contrôle par contact » — fiche à contrôle uniquement sur site.")
+if not has_surface_cols:
+    st.info(
+        "Ce fichier n'a pas les colonnes de surface (déclarée/mesurée/estimée/retenue) — "
+        "les étapes 2 et 3 (surface retenue, volumes, mise à jour fiche BAR) sont masquées "
+        "(fiche non basée sur une surface, par ex. réseau isolé mesuré en longueur)."
+    )
 
 # Lignes dont la conclusion du contrôle sur site est renseignée (utilisées aussi pour le
 # calcul de surface à l'étape 2, où seul le contrôle sur site mesure une surface).
@@ -200,18 +213,19 @@ for r in range(header_row + 1, ws_read.max_row + 1):
 
 # Lignes dont la conclusion du contrôle par contact est renseignée (affichage uniquement).
 rows_contact = []
-for r in range(header_row + 1, ws_read.max_row + 1):
-    ref_val = ws_read.cell(row=r, column=col_ref).value
-    concl_val = ws_read.cell(row=r, column=col_conclusion_contact).value
-    if ref_val is None or str(ref_val).strip() == "":
-        continue
-    if concl_val is None or str(concl_val).strip() == "":
-        continue
-    rows_contact.append(r)
+if has_contact:
+    for r in range(header_row + 1, ws_read.max_row + 1):
+        ref_val = ws_read.cell(row=r, column=col_ref).value
+        concl_val = ws_read.cell(row=r, column=col_conclusion_contact).value
+        if ref_val is None or str(ref_val).strip() == "":
+            continue
+        if concl_val is None or str(concl_val).strip() == "":
+            continue
+        rows_contact.append(r)
 
 st.success(
-    f"{len(rows)} ligne(s) avec conclusion du contrôle sur site renseignée, "
-    f"{len(rows_contact)} ligne(s) avec conclusion du contrôle par contact renseignée."
+    f"{len(rows)} ligne(s) avec conclusion du contrôle sur site renseignée"
+    + (f", {len(rows_contact)} ligne(s) avec conclusion du contrôle par contact renseignée." if has_contact else " (pas de contrôle par contact dans ce fichier).")
 )
 
 # --------------------------------------------------------------------------------------
@@ -232,7 +246,7 @@ odicee_site_data = [
     {
         "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
         "Conclusion du contrôle sur site": ws_read.cell(row=r, column=col_conclusion).value,
-        "Commentaires généraux": ws_read.cell(row=r, column=col_commentaires_generaux).value,
+        "Commentaires généraux": cell_or_none(r, col_commentaires_generaux),
     }
     for r in rows
 ]
@@ -253,264 +267,269 @@ st.dataframe(
     },
 )
 
-st.subheader("Bloc — Contrôle par contact")
-odicee_contact_data = [
-    {
-        "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
-        "Conclusion du contrôle par contact": ws_read.cell(row=r, column=col_conclusion_contact).value,
-        "Commentaire sur le type de non qualité relevée": ws_read.cell(row=r, column=col_non_qualite).value,
-    }
-    for r in rows_contact
-]
-st.dataframe(
-    pd.DataFrame(odicee_contact_data),
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "REFERENCE interne de l'opération": st.column_config.Column(
-            help="Critère de tri : ligne affichée seulement si cette cellule ET « Conclusion du contrôle par contact » sont non vides."
-        ),
-        "Conclusion du contrôle par contact": st.column_config.Column(
-            help="C'est la présence d'une valeur ici qui décide si la ligne apparaît dans ce bloc."
-        ),
-        "Commentaire sur le type de non qualité relevée": st.column_config.Column(
-            help="Renseigné en général quand la conclusion est « Non satisfaisant » ; affiché tel quel (vide si non renseigné)."
-        ),
-    },
-)
-
-# --------------------------------------------------------------------------------------
-# Étape 2 — Surface retenue + volumes
-# --------------------------------------------------------------------------------------
-
-st.header(
-    "2. Surface retenue dans la demande & correction des volumes",
-    help=(
-        "Parmi les lignes ci-dessus, seules celles dont « REFERENCE DE LA FICHE » commence par "
-        "BAR-EN-101, BAR-EN-102, BAR-EN-103 ou BAR-EN-105 sont traitées.\n\n"
-        "Règle de calcul de la surface retenue :\n"
-        "1. Si Surface mesurée < Surface déclarée → retenue = Surface mesurée\n"
-        "2. Sinon, si Écart > 10 % → retenue = Surface estimée\n"
-        "3. Sinon → retenue = Surface déclarée\n\n"
-        "Si la surface retenue diffère de la surface déclarée, les volumes sont recalculés "
-        "au même prorata : VOLUME HORS PRECARITE est arrondi à l'entier supérieur, puis "
-        "VOLUME PRECARITE = total recalculé (arrondi normalement) − VOLUME HORS PRECARITE."
-    ),
-)
-st.caption(
-    "Appliqué uniquement aux lignes BAR-EN-101 / BAR-EN-102 / BAR-EN-103 / BAR-EN-105 "
-    "parmi les lignes ci-dessus."
-)
-
-changes = []
-skipped = []
-for r in rows:
-    fiche_val = normalize(ws_read.cell(row=r, column=col_fiche).value or "")
-    if not any(fiche_val.startswith(f) for f in FICHES_CONCERNEES):
-        continue
-
-    declaree = to_number(ws_read.cell(row=r, column=col_decl).value)
-    mesuree = to_number(ws_read.cell(row=r, column=col_mesuree).value)
-    estimee = to_number(ws_read.cell(row=r, column=col_estimee).value)
-    ecart = to_number(ws_read.cell(row=r, column=col_ecart).value)
-    ref_val = ws_read.cell(row=r, column=col_ref).value
-
-    if declaree is None:
-        skipped.append({"REFERENCE interne": ref_val, "Fiche": fiche_val, "Motif": "surface déclarée absente/non exploitable"})
-        continue
-
-    # Par défaut : surface déclarée. Uniquement remplacée si mesurée < déclarée, ou si
-    # l'écart est strictement supérieur à 10 % (auquel cas on prend l'estimée).
-    if mesuree is not None and mesuree < declaree:
-        retenue = mesuree
-    elif ecart is not None and ecart > 10 and estimee is not None:
-        retenue = estimee
-    else:
-        retenue = declaree
-
-    # Écriture de la surface retenue
-    ws_write.cell(row=r, column=col_retenue).value = retenue
-
-    decrease = retenue < declaree
-    if retenue != declaree:
-        ratio = retenue / declaree
-        cell_hp = ws_write.cell(row=r, column=col_vol_hp)
-        cell_prec = ws_write.cell(row=r, column=col_vol_prec)
-        old_hp = to_number(ws_read.cell(row=r, column=col_vol_hp).value)
-        old_prec = to_number(ws_read.cell(row=r, column=col_vol_prec).value)
-        if old_hp is not None and old_prec is not None:
-            # VOLUME HORS PRECARITE arrondi à l'entier supérieur, VOLUME PRECARITE déduit
-            # du total (arrondi normalement) moins la valeur HORS PRECARITE déjà arrondie,
-            # pour que la somme des deux reste cohérente avec le total recalculé.
-            new_hp = round_ceiling(old_hp * ratio)
-            new_total = round_half_up((old_hp + old_prec) * ratio)
-            new_prec = new_total - new_hp
-            cell_hp.value = new_hp
-            cell_prec.value = new_prec
-        elif old_hp is not None:
-            cell_hp.value = round_half_up(old_hp * ratio)
-        elif old_prec is not None:
-            cell_prec.value = round_half_up(old_prec * ratio)
-
-    id_lot = str(ref_val).rsplit("-", 1)[-1].strip()
-    dossier = str(ref_val).split("-", 1)[0].strip()
-    changes.append(
+if has_contact:
+    st.subheader("Bloc — Contrôle par contact")
+    odicee_contact_data = [
         {
-            "REFERENCE interne": ref_val,
-            "Dossier": dossier,
-            "ID lot de travaux": id_lot,
-            "Fiche": ws_read.cell(row=r, column=col_fiche).value,
-            "Surface déclarée": declaree,
-            "Surface mesurée": mesuree,
-            "Surface estimée": estimee,
-            "Écart (%)": ecart,
-            "Surface retenue": retenue,
-            "Diminution": "Oui" if decrease else "Non",
+            "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
+            "Conclusion du contrôle par contact": ws_read.cell(row=r, column=col_conclusion_contact).value,
+            "Commentaire sur le type de non qualité relevée": cell_or_none(r, col_non_qualite),
         }
-    )
-
-any_decrease = any(c["Diminution"] == "Oui" for c in changes)
-
-if changes:
+        for r in rows_contact
+    ]
     st.dataframe(
-        pd.DataFrame(changes),
+        pd.DataFrame(odicee_contact_data),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Dossier": st.column_config.Column(
-                help="Partie avant le « - » de REFERENCE interne de l'opération : sert de NUMERODOSSIER pour le lien Odicée à l'étape 3."
+            "REFERENCE interne de l'opération": st.column_config.Column(
+                help="Critère de tri : ligne affichée seulement si cette cellule ET « Conclusion du contrôle par contact » sont non vides."
             ),
-            "Fiche": st.column_config.Column(
-                help="Seules les fiches BAR-EN-101, BAR-EN-102, BAR-EN-103 et BAR-EN-105 sont retenues pour ce calcul."
+            "Conclusion du contrôle par contact": st.column_config.Column(
+                help="C'est la présence d'une valeur ici qui décide si la ligne apparaît dans ce bloc."
             ),
-            "Écart (%)": st.column_config.Column(
-                help="= (Surface déclarée − Surface mesurée) / Surface mesurée × 100. Détermine si on utilise la surface estimée quand mesurée ≥ déclarée (écart > 10 %)."
-            ),
-            "Surface retenue": st.column_config.Column(
-                help="Mesurée si mesurée < déclarée ; sinon estimée si écart > 10 % ; sinon déclarée."
-            ),
-            "Diminution": st.column_config.Column(
-                help="« Oui » si Surface retenue < Surface déclarée. Dès qu'au moins une ligne est à « Oui », l'étape 3 (import de fiche BAR) apparaît."
+            "Commentaire sur le type de non qualité relevée": st.column_config.Column(
+                help="Renseigné en général quand la conclusion est « Non satisfaisant » ; affiché tel quel (vide si non renseigné)."
             ),
         },
     )
-else:
-    st.info("Aucune ligne BAR-EN-101/102/103/105 exploitable parmi les lignes filtrées.")
 
-if skipped:
-    with st.expander(f"{len(skipped)} ligne(s) ignorée(s) (surface non exploitable)"):
-        st.dataframe(pd.DataFrame(skipped), use_container_width=True, hide_index=True)
+if has_surface_cols:
+    # --------------------------------------------------------------------------------------
+    # Étape 2 — Surface retenue + volumes
+    # --------------------------------------------------------------------------------------
 
-# Fichier Synthèse mis à jour, prêt à télécharger
-buf_synth = io.BytesIO()
-wb_write.save(buf_synth)
-synth_path = Path(synth_file.name)
-synth_v2_name = f"{synth_path.stem} V2{synth_path.suffix}"
-st.download_button(
-    "⬇️ Télécharger la Synthèse mise à jour",
-    data=buf_synth.getvalue(),
-    file_name=synth_v2_name,
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-# --------------------------------------------------------------------------------------
-# Étape 3 — Mise à jour de la/les fiche(s) BAR
-# --------------------------------------------------------------------------------------
-
-if any_decrease:
     st.header(
-        "3. Mise à jour de la/les fiche(s) BAR",
+        "2. Surface retenue dans la demande & correction des volumes",
         help=(
-            "N'apparaît que si au moins une ligne a « Diminution » = Oui à l'étape 2.\n\n"
-            "La correspondance entre la Synthèse et la fiche BAR se fait sur :\n"
-            "REFERENCE interne de l'opération (partie après le dernier « - ») "
-            "= ID lot de travaux de la fiche BAR."
+            "Parmi les lignes ci-dessus, seules celles dont « REFERENCE DE LA FICHE » commence par "
+            "BAR-EN-101, BAR-EN-102, BAR-EN-103 ou BAR-EN-105 sont traitées.\n\n"
+            "Règle de calcul de la surface retenue :\n"
+            "1. Si Surface mesurée < Surface déclarée → retenue = Surface mesurée\n"
+            "2. Sinon, si Écart > 10 % → retenue = Surface estimée\n"
+            "3. Sinon → retenue = Surface déclarée\n\n"
+            "Si la surface retenue diffère de la surface déclarée, les volumes sont recalculés "
+            "au même prorata : VOLUME HORS PRECARITE est arrondi à l'entier supérieur, puis "
+            "VOLUME PRECARITE = total recalculé (arrondi normalement) − VOLUME HORS PRECARITE."
         ),
     )
     st.caption(
-        "Au moins une surface retenue est inférieure à la surface déclarée : "
-        "importe la ou les fiches BAR (export \"Import lots de travaux\") pour y reporter "
-        "la surface retenue, sur la ligne dont l'\"ID lot de travaux\" correspond."
+        "Appliqué uniquement aux lignes BAR-EN-101 / BAR-EN-102 / BAR-EN-103 / BAR-EN-105 "
+        "parmi les lignes ci-dessus."
     )
 
-    rows_to_apply = [c for c in changes if c["Surface retenue"] != c["Surface déclarée"]]
+    changes = []
+    skipped = []
+    for r in rows:
+        fiche_val = normalize(ws_read.cell(row=r, column=col_fiche).value or "")
+        if not any(fiche_val.startswith(f) for f in FICHES_CONCERNEES):
+            continue
 
-    dossier_fiches = {}
-    for c in rows_to_apply:
-        if c["Dossier"]:
-            dossier_fiches.setdefault(c["Dossier"], set()).add(str(c["Fiche"]).strip())
+        declaree = to_number(ws_read.cell(row=r, column=col_decl).value)
+        mesuree = to_number(ws_read.cell(row=r, column=col_mesuree).value)
+        estimee = to_number(ws_read.cell(row=r, column=col_estimee).value)
+        ecart = to_number(ws_read.cell(row=r, column=col_ecart).value)
+        ref_val = ws_read.cell(row=r, column=col_ref).value
 
-    if dossier_fiches:
-        st.markdown(
-            "**Accès direct au(x) dossier(s) concerné(s) par une surface modifiée :**  \n"
-            + "  \n".join(
-                f"- [{numero} ({', '.join(sorted(fiches))})](https://odicee.edf.fr/dossiers/{numero})"
-                for numero, fiches in sorted(dossier_fiches.items())
-            )
+        if declaree is None:
+            skipped.append({"REFERENCE interne": ref_val, "Fiche": fiche_val, "Motif": "surface déclarée absente/non exploitable"})
+            continue
+
+        # Par défaut : surface déclarée. Uniquement remplacée si mesurée < déclarée, ou si
+        # l'écart est strictement supérieur à 10 % (auquel cas on prend l'estimée).
+        if mesuree is not None and mesuree < declaree:
+            retenue = mesuree
+        elif ecart is not None and ecart > 10 and estimee is not None:
+            retenue = estimee
+        else:
+            retenue = declaree
+
+        # Écriture de la surface retenue
+        ws_write.cell(row=r, column=col_retenue).value = retenue
+
+        decrease = retenue < declaree
+        if retenue != declaree:
+            ratio = retenue / declaree
+            cell_hp = ws_write.cell(row=r, column=col_vol_hp)
+            cell_prec = ws_write.cell(row=r, column=col_vol_prec)
+            old_hp = to_number(ws_read.cell(row=r, column=col_vol_hp).value)
+            old_prec = to_number(ws_read.cell(row=r, column=col_vol_prec).value)
+            if old_hp is not None and old_prec is not None:
+                # VOLUME HORS PRECARITE arrondi à l'entier supérieur, VOLUME PRECARITE déduit
+                # du total (arrondi normalement) moins la valeur HORS PRECARITE déjà arrondie,
+                # pour que la somme des deux reste cohérente avec le total recalculé.
+                new_hp = round_ceiling(old_hp * ratio)
+                new_total = round_half_up((old_hp + old_prec) * ratio)
+                new_prec = new_total - new_hp
+                cell_hp.value = new_hp
+                cell_prec.value = new_prec
+            elif old_hp is not None:
+                cell_hp.value = round_half_up(old_hp * ratio)
+            elif old_prec is not None:
+                cell_prec.value = round_half_up(old_prec * ratio)
+
+        id_lot = str(ref_val).rsplit("-", 1)[-1].strip()
+        dossier = str(ref_val).split("-", 1)[0].strip()
+        changes.append(
+            {
+                "REFERENCE interne": ref_val,
+                "Dossier": dossier,
+                "ID lot de travaux": id_lot,
+                "Fiche": ws_read.cell(row=r, column=col_fiche).value,
+                "Surface déclarée": declaree,
+                "Surface mesurée": mesuree,
+                "Surface estimée": estimee,
+                "Écart (%)": ecart,
+                "Surface retenue": retenue,
+                "Diminution": "Oui" if decrease else "Non",
+            }
         )
 
-    bar_files = st.file_uploader(
-        "Importer la ou les fiches BAR (ex : T155142_BAR-EN-102_A14_1.xlsx)",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        key="bar_upload",
+    any_decrease = any(c["Diminution"] == "Oui" for c in changes)
+
+    if changes:
+        st.dataframe(
+            pd.DataFrame(changes),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Dossier": st.column_config.Column(
+                    help="Partie avant le « - » de REFERENCE interne de l'opération : sert de NUMERODOSSIER pour le lien Odicée à l'étape 3."
+                ),
+                "Fiche": st.column_config.Column(
+                    help="Seules les fiches BAR-EN-101, BAR-EN-102, BAR-EN-103 et BAR-EN-105 sont retenues pour ce calcul."
+                ),
+                "Écart (%)": st.column_config.Column(
+                    help="= (Surface déclarée − Surface mesurée) / Surface mesurée × 100. Détermine si on utilise la surface estimée quand mesurée ≥ déclarée (écart > 10 %)."
+                ),
+                "Surface retenue": st.column_config.Column(
+                    help="Mesurée si mesurée < déclarée ; sinon estimée si écart > 10 % ; sinon déclarée."
+                ),
+                "Diminution": st.column_config.Column(
+                    help="« Oui » si Surface retenue < Surface déclarée. Dès qu'au moins une ligne est à « Oui », l'étape 3 (import de fiche BAR) apparaît."
+                ),
+            },
+        )
+    else:
+        st.info("Aucune ligne BAR-EN-101/102/103/105 exploitable parmi les lignes filtrées.")
+
+    if skipped:
+        with st.expander(f"{len(skipped)} ligne(s) ignorée(s) (surface non exploitable)"):
+            st.dataframe(pd.DataFrame(skipped), use_container_width=True, hide_index=True)
+
+    # Fichier Synthèse mis à jour, prêt à télécharger
+    buf_synth = io.BytesIO()
+    wb_write.save(buf_synth)
+    synth_path = Path(synth_file.name)
+    synth_v2_name = f"{synth_path.stem} V2{synth_path.suffix}"
+    st.download_button(
+        "⬇️ Télécharger la Synthèse mise à jour",
+        data=buf_synth.getvalue(),
+        file_name=synth_v2_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    if bar_files:
-        for bf in bar_files:
-            bar_bytes = bf.getvalue()
-            bwb = openpyxl.load_workbook(io.BytesIO(bar_bytes), data_only=False)
-            bws = bwb.active
+    # --------------------------------------------------------------------------------------
+    # Étape 3 — Mise à jour de la/les fiche(s) BAR
+    # --------------------------------------------------------------------------------------
 
-            bar_header_row = find_header_row(bws, "ID lot de travaux")
-            if not bar_header_row:
-                st.error(f"{bf.name} : colonne \"ID lot de travaux\" introuvable.")
-                continue
+    if any_decrease:
+        st.header(
+            "3. Mise à jour de la/les fiche(s) BAR",
+            help=(
+                "N'apparaît que si au moins une ligne a « Diminution » = Oui à l'étape 2.\n\n"
+                "La correspondance entre la Synthèse et la fiche BAR se fait sur :\n"
+                "REFERENCE interne de l'opération (partie après le dernier « - ») "
+                "= ID lot de travaux de la fiche BAR."
+            ),
+        )
+        st.caption(
+            "Au moins une surface retenue est inférieure à la surface déclarée : "
+            "importe la ou les fiches BAR (export \"Import lots de travaux\") pour y reporter "
+            "la surface retenue, sur la ligne dont l'\"ID lot de travaux\" correspond."
+        )
 
-            bar_headers = build_header_map(bws, bar_header_row)
-            col_id_lot = find_col(bar_headers, "ID lot de travaux")
-            col_surface = find_col(bar_headers, "surface")
+        rows_to_apply = [c for c in changes if c["Surface retenue"] != c["Surface déclarée"]]
 
-            if not col_id_lot or not col_surface:
-                st.error(f"{bf.name} : colonnes \"ID lot de travaux\" / \"surface\" introuvables.")
-                continue
+        dossier_fiches = {}
+        for c in rows_to_apply:
+            if c["Dossier"]:
+                dossier_fiches.setdefault(c["Dossier"], set()).add(str(c["Fiche"]).strip())
 
-            applied = []
-            for r in range(bar_header_row + 1, bws.max_row + 1):
-                id_val = bws.cell(row=r, column=col_id_lot).value
-                id_num = to_number(id_val)
-                if id_num is None:
-                    continue
-                id_lot_bar = str(int(id_num))
-
-                for chg in rows_to_apply:
-                    if chg["ID lot de travaux"] == id_lot_bar:
-                        cell = bws.cell(row=r, column=col_surface)
-                        old_val = cell.value
-                        new_val = fmt_like(old_val, chg["Surface retenue"])
-                        cell.value = new_val
-                        applied.append(
-                            {
-                                "ID lot de travaux": id_lot_bar,
-                                "Ancienne surface": old_val,
-                                "Nouvelle surface": new_val,
-                            }
-                        )
-
-            if applied:
-                st.write(f"**{bf.name}** — {len(applied)} ligne(s) mise(s) à jour :")
-                st.dataframe(pd.DataFrame(applied), use_container_width=True, hide_index=True)
-                out = io.BytesIO()
-                bwb.save(out)
-                st.download_button(
-                    f"⬇️ Télécharger {bf.name} corrigé",
-                    data=out.getvalue(),
-                    file_name=f"MAJ_{bf.name}",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_{bf.name}",
+        if dossier_fiches:
+            st.markdown(
+                "**Accès direct au(x) dossier(s) concerné(s) par une surface modifiée :**  \n"
+                + "  \n".join(
+                    f"- [{numero} ({', '.join(sorted(fiches))})](https://odicee.edf.fr/dossiers/{numero})"
+                    for numero, fiches in sorted(dossier_fiches.items())
                 )
-            else:
-                st.info(f"{bf.name} : aucune ligne correspondant à un \"ID lot de travaux\" à corriger n'a été trouvée.")
+            )
+
+        bar_files = st.file_uploader(
+            "Importer la ou les fiches BAR (ex : T155142_BAR-EN-102_A14_1.xlsx)",
+            type=["xlsx"],
+            accept_multiple_files=True,
+            key="bar_upload",
+        )
+
+        if bar_files:
+            for bf in bar_files:
+                bar_bytes = bf.getvalue()
+                bwb = openpyxl.load_workbook(io.BytesIO(bar_bytes), data_only=False)
+                bws = bwb.active
+
+                bar_header_row = find_header_row(bws, "ID lot de travaux")
+                if not bar_header_row:
+                    st.error(f"{bf.name} : colonne \"ID lot de travaux\" introuvable.")
+                    continue
+
+                bar_headers = build_header_map(bws, bar_header_row)
+                col_id_lot = find_col(bar_headers, "ID lot de travaux")
+                col_surface = find_col(bar_headers, "surface")
+
+                if not col_id_lot or not col_surface:
+                    st.error(f"{bf.name} : colonnes \"ID lot de travaux\" / \"surface\" introuvables.")
+                    continue
+
+                applied = []
+                for r in range(bar_header_row + 1, bws.max_row + 1):
+                    id_val = bws.cell(row=r, column=col_id_lot).value
+                    id_num = to_number(id_val)
+                    if id_num is None:
+                        continue
+                    id_lot_bar = str(int(id_num))
+
+                    for chg in rows_to_apply:
+                        if chg["ID lot de travaux"] == id_lot_bar:
+                            cell = bws.cell(row=r, column=col_surface)
+                            old_val = cell.value
+                            new_val = fmt_like(old_val, chg["Surface retenue"])
+                            cell.value = new_val
+                            applied.append(
+                                {
+                                    "ID lot de travaux": id_lot_bar,
+                                    "Ancienne surface": old_val,
+                                    "Nouvelle surface": new_val,
+                                }
+                            )
+
+                if applied:
+                    st.write(f"**{bf.name}** — {len(applied)} ligne(s) mise(s) à jour :")
+                    st.dataframe(pd.DataFrame(applied), use_container_width=True, hide_index=True)
+                    out = io.BytesIO()
+                    bwb.save(out)
+                    st.download_button(
+                        f"⬇️ Télécharger {bf.name} corrigé",
+                        data=out.getvalue(),
+                        file_name=f"MAJ_{bf.name}",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_{bf.name}",
+                    )
+                else:
+                    st.info(f"{bf.name} : aucune ligne correspondant à un \"ID lot de travaux\" à corriger n'a été trouvée.")
+else:
+    changes = []
+    any_decrease = False
 
 # ========================================================================================
 # Étape 4 — Taux de contrôle, conformité réglementaire et catégorisation du lot
@@ -569,7 +588,7 @@ for r in all_op_rows:
     elif cls_site == "non_satisfaisant":
         nb_non_satisfaisant_site += 1
 
-    if classify_conclusion(ws_read.cell(row=r, column=col_conclusion_contact).value) == "satisfaisant":
+    if classify_conclusion(cell_or_none(r, col_conclusion_contact)) == "satisfaisant":
         nb_satisfaisant_contact += 1
 
     if fiche_lot is None:
@@ -734,9 +753,9 @@ else:
         bailleur = str(bailleur).strip() if bailleur else "(bailleur non renseigné)"
 
         concl_site_val = ws_read.cell(row=r, column=col_conclusion).value
-        concl_contact_val = ws_read.cell(row=r, column=col_conclusion_contact).value
+        concl_contact_val = cell_or_none(r, col_conclusion_contact)
         cls_site = classify_conclusion(concl_site_val)
-        commentaires_generaux_val = ws_read.cell(row=r, column=col_commentaires_generaux).value
+        commentaires_generaux_val = cell_or_none(r, col_commentaires_generaux)
 
         bailleurs.setdefault(bailleur, []).append(
             {
