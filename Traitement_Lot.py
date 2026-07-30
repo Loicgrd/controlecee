@@ -731,19 +731,22 @@ if not all([col_i, col_e, col_f, col_g, col_h]):
     st.error("Colonnes bailleur/adresse introuvables (RAISON SOCIALE / NOM DU SITE / ADRESSE / CODE POSTAL / VILLE).")
 else:
     def build_commentaire(cls_site, commentaires_generaux, cas):
+        """Retourne (texte du commentaire, statut) où statut détermine la couleur de la
+        ligne dans l'export. « Transféré » utilise le même texte et la même couleur, que
+        l'opération soit inaccessible/non vérifiable ou non visitée."""
         if cls_site == "satisfaisant":
-            return "L'opération sera valorisée dans ce lot"
+            return "L'opération sera valorisée dans ce lot", "valorisee"
         if cls_site == "non_satisfaisant":
             txt = str(commentaires_generaux).strip() if commentaires_generaux else ""
-            return txt or "Non satisfaisant sur site — voir Commentaires généraux"
+            return (txt or "Non satisfaisant sur site — voir Commentaires généraux"), "non_satisfaisant"
         if cls_site == "inaccessible":
             if cas in (1, 2):
-                return "L'opération sera valorisée dans ce lot"
-            return "L'opération sera transférée dans un nouveau lot de contrôle si la date de fin de validité du dossier nous le permet"
+                return "L'opération sera valorisée dans ce lot", "valorisee"
+            return "L'opération sera transférée dans un nouveau lot de contrôle si la date de fin de validité du dossier nous le permet", "transferee"
         # non_visite
         if cas == 1:
-            return "L'opération sera valorisée dans ce lot"
-        return "L'opération sera transférée dans un nouveau lot de contrôle si l'opération nous le permet"
+            return "L'opération sera valorisée dans ce lot", "valorisee"
+        return "L'opération sera transférée dans un nouveau lot de contrôle si la date de fin de validité du dossier nous le permet", "transferee"
 
     bailleurs = {}
     for r in all_op_rows:
@@ -754,6 +757,7 @@ else:
         concl_contact_val = cell_or_none(r, col_conclusion_contact)
         cls_site = classify_conclusion(concl_site_val)
         commentaires_generaux_val = cell_or_none(r, col_commentaires_generaux)
+        commentaire_txt, statut = build_commentaire(cls_site, commentaires_generaux_val, cas_lot)
 
         bailleurs.setdefault(bailleur, []).append(
             {
@@ -764,16 +768,16 @@ else:
                 "Ville": ws_read.cell(row=r, column=col_h).value,
                 "Conclusion du contrôle sur site": str(concl_site_val).strip() if concl_site_val and str(concl_site_val).strip() else "Non visité",
                 "Conclusion du contrôle par contact": str(concl_contact_val).strip() if concl_contact_val and str(concl_contact_val).strip() else "Non visité",
-                "Commentaire": build_commentaire(cls_site, commentaires_generaux_val, cas_lot),
+                "Commentaire": commentaire_txt,
                 "Dossier": str(ws_read.cell(row=r, column=col_ref).value or "").split("-", 1)[0].strip(),
+                "Statut": statut,
             }
         )
 
     COULEUR_COMMENTAIRE = {
-        "satisfaisant": "C6EFCE",
+        "valorisee": "C6EFCE",
         "non_satisfaisant": "FFC7CE",
-        "inaccessible": "FFE0B2",
-        "non_visite": "E0E0E0",
+        "transferee": "FFE0B2",
     }
 
     def build_excel_bailleur(lignes):
@@ -781,7 +785,7 @@ else:
         ws_b = wb_b.active
         ws_b.title = "Résultats contrôle"
         headers_b = list(lignes[0].keys())
-        headers_b = [h for h in headers_b if h != "Dossier"]  # colonne technique, pas affichée
+        headers_b = [h for h in headers_b if h not in ("Dossier", "Statut")]  # colonnes techniques, pas affichées
         header_font = Font(bold=True, color="FFFFFF")
         header_fill = PatternFill("solid", fgColor="2F5496")
         for c, h in enumerate(headers_b, 1):
@@ -793,8 +797,7 @@ else:
             for c, h in enumerate(headers_b, 1):
                 cell = ws_b.cell(row=r, column=c, value=ligne[h])
                 cell.alignment = Alignment(vertical="center", wrap_text=True)
-            cls = classify_conclusion(ligne["Conclusion du contrôle sur site"] if ligne["Conclusion du contrôle sur site"] != "Non visité" else "")
-            color = COULEUR_COMMENTAIRE.get(cls)
+            color = COULEUR_COMMENTAIRE.get(ligne["Statut"])
             if color:
                 for c in range(1, len(headers_b) + 1):
                     ws_b.cell(row=r, column=c).fill = PatternFill("solid", fgColor=color)
