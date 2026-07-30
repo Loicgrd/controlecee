@@ -817,7 +817,7 @@ else:
         liste_dossiers = "\n".join(f"- {d}" for d in dossiers)
         corps = (
             "Bonjour,\n\n"
-            f"Nous avons reçu les résultats du lot {num_lot}.\n\n"
+            f"Nous avons reçu les résultats du lot {num_lot} ({fiche_lot}).\n\n"
             "La conclusion du lot est la suivante :\n\n"
             f"{conclusion_cas}\n\n"
             "Voici la liste des dossiers concernés par l'opération :\n\n"
