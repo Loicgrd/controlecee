@@ -849,7 +849,11 @@ else:
         subject = f"Retour de contrôle {num_lot}"
         attach_name = f"{sanitize_filename(num_lot)} - {sanitize_filename(bailleur)}.xlsx"
         xlsx_bytes_b = build_excel_bailleur(lignes)
-        mailto_url = f"mailto:?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
+        cc_address = "controle.ceebs@promotelec-services.com"
+        mailto_url = (
+            f"mailto:?cc={urllib.parse.quote(cc_address)}"
+            f"&subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
+        )
 
         with st.expander(f"🏢 {bailleur} — {len(lignes)} opération(s)"):
             bcol1, bcol2 = st.columns(2)
