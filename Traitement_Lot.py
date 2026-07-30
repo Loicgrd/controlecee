@@ -578,8 +578,10 @@ nb_controles_site = 0
 nb_satisfaisant_contact = 0
 fiche_lot = None
 dates_engagement = []
+dates_achevement = []
 
 col_date_engagement = find_col(headers, "DATE D'ENGAGEMENT")
+col_date_achevement = find_col(headers, "DATE d'achèvement de l'opération")
 
 for r in all_op_rows:
     cls_site = classify_conclusion(ws_read.cell(row=r, column=col_conclusion).value)
@@ -603,19 +605,31 @@ for r in all_op_rows:
         if d:
             dates_engagement.append(d)
 
+    if col_date_achevement:
+        d2 = parse_date_fr(ws_read.cell(row=r, column=col_date_achevement).value)
+        if d2:
+            dates_achevement.append(d2)
+
 taux_s_site = (nb_satisfaisant_site / total_ops * 100) if total_ops else 0.0
 taux_s_contact = (nb_satisfaisant_contact / total_ops * 100) if total_ops else 0.0
 taux_ns_site = (nb_non_satisfaisant_site / nb_controles_site * 100) if nb_controles_site else 0.0
 date_engagement_max = max(dates_engagement) if dates_engagement else None
+date_achevement_min = min(dates_achevement) if dates_achevement else None
 
 seuil_site, seuil_contact = get_seuils_fiche(fiche_lot, date_engagement_max) if fiche_lot and date_engagement_max else (None, None)
 
-col_info1, col_info2, col_info3 = st.columns(3)
+col_info1, col_info2, col_info3, col_info4 = st.columns(4)
 with col_info1:
     st.metric("Fiche BAR du lot", fiche_lot or "—")
 with col_info2:
     st.metric("Date d'engagement la plus récente", date_engagement_max.strftime("%d/%m/%Y") if date_engagement_max else "—")
 with col_info3:
+    st.metric(
+        "Date de réalisation la plus ancienne",
+        date_achevement_min.strftime("%d/%m/%Y") if date_achevement_min else "—",
+        help="Date la plus ancienne de la colonne « DATE d'achèvement de l'opération ».",
+    )
+with col_info4:
     seuil_txt = ""
     if seuil_site is not None:
         seuil_txt += f"Site ≥ {seuil_site:g}%"
