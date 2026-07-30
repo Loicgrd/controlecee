@@ -19,12 +19,8 @@ contrôle par contact.
 import io
 import os
 import re
-import smtplib
 import urllib.parse
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
 
 import openpyxl
@@ -393,28 +389,29 @@ if has_surface_cols:
     any_decrease = any(c["Diminution"] == "Oui" for c in changes)
 
     if changes:
-        st.dataframe(
-            pd.DataFrame(changes),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Dossier": st.column_config.Column(
-                    help="Partie avant le « - » de REFERENCE interne de l'opération : sert de NUMERODOSSIER pour le lien Odicée à l'étape 3."
-                ),
-                "Fiche": st.column_config.Column(
-                    help="Seules les fiches BAR-EN-101, BAR-EN-102, BAR-EN-103 et BAR-EN-105 sont retenues pour ce calcul."
-                ),
-                "Écart (%)": st.column_config.Column(
-                    help="= (Surface déclarée − Surface mesurée) / Surface mesurée × 100. Détermine si on utilise la surface estimée quand mesurée ≥ déclarée (écart > 10 %)."
-                ),
-                "Surface retenue": st.column_config.Column(
-                    help="Mesurée si mesurée < déclarée ; sinon estimée si écart > 10 % ; sinon déclarée."
-                ),
-                "Diminution": st.column_config.Column(
-                    help="« Oui » si Surface retenue < Surface déclarée. Dès qu'au moins une ligne est à « Oui », l'étape 3 (import de fiche BAR) apparaît."
-                ),
-            },
-        )
+        with st.expander(f"Voir le détail des {len(changes)} ligne(s) traitées", expanded=False):
+            st.dataframe(
+                pd.DataFrame(changes),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Dossier": st.column_config.Column(
+                        help="Partie avant le « - » de REFERENCE interne de l'opération : sert de NUMERODOSSIER pour le lien Odicée à l'étape 3."
+                    ),
+                    "Fiche": st.column_config.Column(
+                        help="Seules les fiches BAR-EN-101, BAR-EN-102, BAR-EN-103 et BAR-EN-105 sont retenues pour ce calcul."
+                    ),
+                    "Écart (%)": st.column_config.Column(
+                        help="= (Surface déclarée − Surface mesurée) / Surface mesurée × 100. Détermine si on utilise la surface estimée quand mesurée ≥ déclarée (écart > 10 %)."
+                    ),
+                    "Surface retenue": st.column_config.Column(
+                        help="Mesurée si mesurée < déclarée ; sinon estimée si écart > 10 % ; sinon déclarée."
+                    ),
+                    "Diminution": st.column_config.Column(
+                        help="« Oui » si Surface retenue < Surface déclarée. Dès qu'au moins une ligne est à « Oui », l'étape 3 (import de fiche BAR) apparaît."
+                    ),
+                },
+            )
     else:
         st.info("Aucune ligne BAR-EN-101/102/103/105 exploitable parmi les lignes filtrées.")
 
@@ -716,15 +713,18 @@ st.markdown(
 )
 
 # ========================================================================================
-# Étape 5 — Export Excel par bailleur
+# Étape 5 — Export Excel et mail par bailleur
 # ========================================================================================
 
 st.header(
-    "5. Export Excel par bailleur",
+    "5. Export Excel et mail par bailleur",
     help=(
         "Un fichier par « RAISON SOCIALE du bénéficiaire de l'opération », avec les colonnes "
         "REFERENCE interne / Nom du site / Adresse / Code postal / Ville / Conclusion sur site / "
-        "Conclusion par contact / Commentaire (généré selon le cas du lot)."
+        "Conclusion par contact / Commentaire (généré selon le cas du lot).\n\n"
+        "Le bouton mail ouvre le client mail par défaut (objet + corps pré-remplis) ; la pièce "
+        "jointe n'est pas ajoutée automatiquement (limite du lien mailto) — télécharge-la et "
+        "joins-la manuellement."
     ),
 )
 
@@ -816,72 +816,6 @@ else:
     st.session_state["cas_lot"] = cas_lot
     st.session_state["conclusion_cas"] = conclusion_cas
 
-    for bailleur, lignes in sorted(bailleurs.items()):
-        with st.expander(f"🏢 {bailleur} — {len(lignes)} opération(s)"):
-            st.dataframe(pd.DataFrame(lignes).drop(columns=["Dossier"]), use_container_width=True, hide_index=True)
-            xlsx_bytes_b = build_excel_bailleur(lignes)
-            st.download_button(
-                f"⬇️ Télécharger le tableau — {bailleur}",
-                data=xlsx_bytes_b,
-                file_name=f"{sanitize_filename(bailleur)}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_bailleur_{bailleur}",
-            )
-
-    # ====================================================================================
-    # Étape 6 — Génération et envoi des mails clients
-    # ====================================================================================
-
-    def smtp_est_configure():
-        try:
-            return "smtp" in st.secrets
-        except Exception:
-            return False
-
-    def envoyer_smtp(destinataires, sujet, corps_txt, piece_jointe_bytes, piece_jointe_nom):
-        cfg = st.secrets["smtp"]
-        msg = MIMEMultipart()
-        msg["From"] = cfg.get("from", cfg["user"])
-        msg["To"] = ", ".join(destinataires)
-        msg["Subject"] = sujet
-        msg.attach(MIMEText(corps_txt, "plain", "utf-8"))
-        part = MIMEApplication(piece_jointe_bytes, Name=piece_jointe_nom)
-        part["Content-Disposition"] = f'attachment; filename="{piece_jointe_nom}"'
-        msg.attach(part)
-        with smtplib.SMTP(cfg.get("host", "smtp.office365.com"), int(cfg.get("port", 587))) as server:
-            server.starttls()
-            server.login(cfg["user"], cfg["password"])
-            server.sendmail(msg["From"], destinataires, msg.as_string())
-
-    smtp_ok = smtp_est_configure()
-
-    st.header(
-        "6. Génération des mails clients",
-        help=(
-            "Un mail par bailleur, avec le tableau correspondant en pièce jointe.\n\n"
-            "Si une boîte mail générique est configurée dans les secrets Streamlit "
-            "([smtp] host/port/user/password/from), l'envoi se fait directement depuis "
-            "l'application, pièce jointe incluse — pas besoin d'un poste avec Outlook installé, "
-            "ça fonctionne aussi sur Streamlit Cloud.\n\n"
-            "Sans cette configuration, un lien ouvre le client mail par défaut du navigateur "
-            "(objet + corps pré-remplis), mais sans pièce jointe (limite du lien mailto) : "
-            "il faut alors la télécharger et la joindre manuellement."
-        ),
-    )
-
-    if not smtp_ok:
-        st.info(
-            "Envoi automatique non configuré. Pour l'activer (recommandé pour une appli "
-            "partagée sur Streamlit Cloud), ajoute dans les secrets de l'application :\n\n"
-            "```\n[smtp]\nhost = \"smtp.office365.com\"\nport = 587\n"
-            "user = \"boite-generique@domaine.fr\"\npassword = \"...\"\n"
-            "from = \"boite-generique@domaine.fr\"\n```\n\n"
-            "⚠️ Microsoft 365 exige que l'authentification SMTP (« SMTP AUTH ») soit activée "
-            "explicitement pour cette boîte par un administrateur, et un mot de passe "
-            "d'application est généralement requis (l'authentification classique par mot de "
-            "passe est désactivée par défaut)."
-        )
-
     guess_lot = re.sub(r"^Synth[eè]se\s*[-_]\s*", "", Path(synth_file.name).stem, flags=re.IGNORECASE).strip()
     num_lot = st.text_input("Numéro de lot (pour l'objet du mail)", value=guess_lot)
 
@@ -904,36 +838,17 @@ else:
         subject = f"Retour de contrôle {num_lot}"
         attach_name = f"{sanitize_filename(bailleur)}.xlsx"
         xlsx_bytes_b = build_excel_bailleur(lignes)
+        mailto_url = f"mailto:?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
 
-        with st.expander(f"✉️ Mail — {bailleur}"):
-            to_address = st.text_input(
-                "Destinataire(s) — séparés par ; si plusieurs",
-                key=f"to_{bailleur}",
-            )
-            corps_edite = st.text_area("Corps du message (modifiable)", value=corps, height=260, key=f"corps_{bailleur}")
-
-            if smtp_ok:
-                if st.button(f"📤 Envoyer — {bailleur}", key=f"send_{bailleur}"):
-                    destinataires = [e.strip() for e in to_address.split(";") if e.strip()]
-                    if not destinataires:
-                        st.error("Renseigne au moins un destinataire.")
-                    else:
-                        try:
-                            envoyer_smtp(destinataires, subject, corps_edite, xlsx_bytes_b, attach_name)
-                            st.success(f"Mail envoyé à {', '.join(destinataires)}, pièce jointe incluse.")
-                        except Exception as e:
-                            st.error(f"Échec de l'envoi : {e}")
-            else:
-                mailto_url = (
-                    f"mailto:{urllib.parse.quote(to_address.strip())}"
-                    f"?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps_edite)}"
+        with st.expander(f"🏢 {bailleur} — {len(lignes)} opération(s)"):
+            bcol1, bcol2 = st.columns(2)
+            with bcol1:
+                st.link_button(f"📧 Envoyer le mail — {bailleur}", mailto_url)
+            with bcol2:
+                st.download_button(
+                    f"⬇️ Télécharger l'Excel — {bailleur}",
+                    data=xlsx_bytes_b,
+                    file_name=attach_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key=f"dl_bailleur_{bailleur}",
                 )
-                st.link_button(f"📧 Ouvrir dans le client mail — {bailleur}", mailto_url)
-
-            st.download_button(
-                f"⬇️ Télécharger la pièce jointe — {bailleur}",
-                data=xlsx_bytes_b,
-                file_name=attach_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"dl_mail_{bailleur}",
-            )
