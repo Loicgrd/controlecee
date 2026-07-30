@@ -658,17 +658,10 @@ if taux_satisfaisant_conforme and ns_conforme:
     conclusion_cas = "La totalité des opérations dans le lot est déposable."
 elif taux_satisfaisant_conforme and not ns_conforme:
     cas_lot = 2
-    conclusion_cas = (
-        "On peut déposer toutes les opérations visitées seulement (toutes les cellules de "
-        "la colonne « Conclusion de l'audit » non vide)."
-    )
+    conclusion_cas = "On peut déposer toutes les opérations visitées seulement."
 else:
     cas_lot = 3
-    conclusion_cas = (
-        "On ne peut déposer que les opérations contrôlées satisfaisantes et non satisfaisantes "
-        "(toutes les cellules de la colonne « Conclusion de l'audit » non vide, en enlevant les "
-        "inaccessibles par rapport au cas 2)."
-    )
+    conclusion_cas = "On ne peut déposer que les opérations contrôlées satisfaisantes et non satisfaisantes."
 
 def carte_taux(titre, ok, valeur_txt, sous_texte):
     color = "#C6EFCE" if ok else "#FFCCCC"
