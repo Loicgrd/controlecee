@@ -649,32 +649,45 @@ else:
         "inaccessibles par rapport au cas 2)."
     )
 
+def carte_taux(titre, ok, valeur_txt, sous_texte):
+    color = "#C6EFCE" if ok else "#FFCCCC"
+    icone = "✅" if ok else "❌"
+    return (
+        f"<div style='background:{color};padding:12px;border-radius:8px;text-align:center'>"
+        f"<b>{titre}</b> {icone}<br>"
+        f"<span style='font-size:22px;font-weight:bold'>{valeur_txt}</span><br>"
+        f"<small>{sous_texte}</small>"
+        f"</div>"
+    )
+
+
 taux_cols = st.columns(3)
 with taux_cols[0]:
-    icone = "✅" if site_ok else "❌"
+    sous = (f"{nb_satisfaisant_site}/{total_ops} — seuil ≥ {seuil_site:g}%" if seuil_site is not None
+            else f"{nb_satisfaisant_site}/{total_ops} — pas de seuil pour cette fiche")
     st.markdown(
-        f"**Taux satisfaisant sur site** {icone}  \n"
-        f"{taux_s_site:.1f} % ({nb_satisfaisant_site}/{total_ops})"
-        + (f" — seuil ≥ {seuil_site:g}%" if seuil_site is not None else " — pas de seuil pour cette fiche")
+        carte_taux("Taux satisfaisant sur site", site_ok, f"{taux_s_site:.1f} %", sous),
+        unsafe_allow_html=True,
     )
 with taux_cols[1]:
-    icone = "✅" if contact_ok else "❌"
+    sous = (f"{nb_satisfaisant_contact}/{total_ops} — seuil ≥ {seuil_contact:g}%" if seuil_contact is not None
+            else f"{nb_satisfaisant_contact}/{total_ops} — pas de seuil pour cette fiche")
     st.markdown(
-        f"**Taux satisfaisant par contact** {icone}  \n"
-        f"{taux_s_contact:.1f} % ({nb_satisfaisant_contact}/{total_ops})"
-        + (f" — seuil ≥ {seuil_contact:g}%" if seuil_contact is not None else " — pas de seuil pour cette fiche")
+        carte_taux("Taux satisfaisant par contact", contact_ok, f"{taux_s_contact:.1f} %", sous),
+        unsafe_allow_html=True,
     )
 with taux_cols[2]:
-    icone = "✅" if ns_conforme else "❌"
+    sous = f"{nb_non_satisfaisant_site}/{nb_controles_site} — seuil ≤ {seuil_ns_max:g}%"
     st.markdown(
-        f"**Taux non satisfaisant sur site** {icone}  \n"
-        f"{taux_ns_site:.1f} % ({nb_non_satisfaisant_site}/{nb_controles_site}) — seuil ≤ {seuil_ns_max:g}%"
+        carte_taux("Taux non satisfaisant sur site", ns_conforme, f"{taux_ns_site:.1f} %", sous),
+        unsafe_allow_html=True,
     )
 
 cas_couleur = {1: "#e8f5e9", 2: "#fff3e0", 3: "#ffebee"}[cas_lot]
 st.markdown(
     f"<div style='background-color:{cas_couleur}; padding:14px; border-radius:8px;'>"
     f"<b>Cas {cas_lot}</b> — {conclusion_cas}</div>",
+
     unsafe_allow_html=True,
 )
 
