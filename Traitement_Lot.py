@@ -19,7 +19,6 @@ contrôle par contact.
 import io
 import os
 import re
-import urllib.parse
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -831,15 +830,22 @@ else:
     st.header(
         "6. Génération des mails clients",
         help=(
-            "Un mail par bailleur. Le bouton ouvre Outlook (ou le client mail par défaut) "
-            "avec le destinataire, l'objet et le corps déjà pré-remplis via un lien mailto. "
-            "La pièce jointe n'est pas ajoutée automatiquement (limite du mailto) : "
-            "télécharge le tableau ci-dessus et joins-le manuellement avant l'envoi."
+            "Un mail par bailleur, avec le tableau correspondant joint automatiquement. "
+            "Nécessite pywin32 installé et Outlook configuré sur le poste qui exécute "
+            "l'application (pip install pywin32)."
         ),
     )
 
     guess_lot = re.sub(r"^Synth[eè]se\s*[-_]\s*", "", Path(synth_file.name).stem, flags=re.IGNORECASE).strip()
     num_lot = st.text_input("Numéro de lot (pour l'objet du mail)", value=guess_lot)
+    boite_generique = st.text_input(
+        "Adresse de la boîte mail générique à utiliser comme expéditeur (facultatif)",
+        help=(
+            "Si renseignée, l'application cherche ce compte parmi ceux configurés dans ton "
+            "Outlook et l'utilise directement comme expéditeur — plus besoin de cliquer sur "
+            "la flèche 'De' pour changer de boîte. Laisse vide pour garder le compte par défaut."
+        ),
+    )
 
     for bailleur, lignes in sorted(bailleurs.items()):
         dossiers = sorted({l["Dossier"] for l in lignes if l["Dossier"]})
@@ -864,11 +870,52 @@ else:
                 "Destinataire (facultatif, à compléter manuellement dans Outlook sinon)",
                 key=f"to_{bailleur}",
             )
-            mailto_url = (
-                f"mailto:{urllib.parse.quote(to_address.strip())}"
-                f"?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
-            )
-            st.link_button(f"📧 Ouvrir dans Outlook — {bailleur}", mailto_url)
+
+            if st.button(f"📧 Créer le brouillon Outlook — {bailleur}", key=f"outlook_{bailleur}"):
+                try:
+                    import tempfile
+                    import win32com.client as win32
+
+                    outlook = win32.Dispatch("Outlook.Application")
+                    mail_item = outlook.CreateItem(0)  # olMailItem
+                    mail_item.Subject = subject
+                    mail_item.Body = corps
+                    if to_address.strip():
+                        mail_item.To = to_address.strip()
+
+                    if boite_generique.strip():
+                        compte_trouve = None
+                        for acc in outlook.Session.Accounts:
+                            if acc.SmtpAddress.strip().lower() == boite_generique.strip().lower():
+                                compte_trouve = acc
+                                break
+                        if compte_trouve is not None:
+                            mail_item.SendUsingAccount = compte_trouve
+                        else:
+                            st.warning(
+                                f"Compte « {boite_generique} » introuvable parmi les comptes "
+                                "Outlook configurés sur ce poste — le compte par défaut sera "
+                                "utilisé. Vérifie l'adresse ou la configuration Outlook."
+                            )
+
+                    xlsx_bytes_b = build_excel_bailleur(lignes)
+                    tmp_dir = tempfile.mkdtemp()
+                    attach_name = f"{sanitize_filename(bailleur)}.xlsx"
+                    attach_path = os.path.join(tmp_dir, attach_name)
+                    with open(attach_path, "wb") as fh:
+                        fh.write(xlsx_bytes_b)
+                    mail_item.Attachments.Add(attach_path)
+
+                    mail_item.Display()
+                    st.success(f"Brouillon Outlook ouvert pour {bailleur}, pièce jointe incluse. Vérifie le destinataire avant l'envoi.")
+                except ImportError:
+                    st.error(
+                        "pywin32 n'est pas installé, ou l'application ne tourne pas sur un poste "
+                        "Windows avec Outlook. Installe-le avec `pip install pywin32` et lance "
+                        "l'application en local sur le poste où Outlook est configuré."
+                    )
+                except Exception as e:
+                    st.error(f"Impossible d'ouvrir le brouillon Outlook : {e}")
 
             xlsx_bytes_b = build_excel_bailleur(lignes)
             st.download_button(
