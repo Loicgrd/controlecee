@@ -713,7 +713,7 @@ st.header(
     "5. Export Excel et mail par bailleur",
     help=(
         "Un fichier par « RAISON SOCIALE du bénéficiaire de l'opération », avec les colonnes "
-        "REFERENCE interne / Nom du site / Adresse / Code postal / Ville / Conclusion sur site / "
+        "Numéro dossier ODICEE / Nom du site / Adresse / Code postal / Ville / Conclusion sur site / "
         "Conclusion par contact / Commentaire (généré selon le cas du lot).\n\n"
         "Le bouton mail ouvre le client mail par défaut (objet + corps pré-remplis) ; la pièce "
         "jointe n'est pas ajoutée automatiquement (limite du lien mailto) — télécharge-la et "
@@ -758,10 +758,11 @@ else:
         cls_site = classify_conclusion(concl_site_val)
         commentaires_generaux_val = cell_or_none(r, col_commentaires_generaux)
         commentaire_txt, statut = build_commentaire(cls_site, commentaires_generaux_val, cas_lot)
+        dossier_num = str(ws_read.cell(row=r, column=col_ref).value or "").split("-", 1)[0].strip()
 
         bailleurs.setdefault(bailleur, []).append(
             {
-                "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
+                "Numéro dossier ODICEE": dossier_num,
                 "Nom du site": ws_read.cell(row=r, column=col_e).value,
                 "Adresse": ws_read.cell(row=r, column=col_f).value,
                 "Code postal": ws_read.cell(row=r, column=col_g).value,
@@ -769,7 +770,7 @@ else:
                 "Conclusion du contrôle sur site": str(concl_site_val).strip() if concl_site_val and str(concl_site_val).strip() else "Non visité",
                 "Conclusion du contrôle par contact": str(concl_contact_val).strip() if concl_contact_val and str(concl_contact_val).strip() else "Non visité",
                 "Commentaire": commentaire_txt,
-                "Dossier": str(ws_read.cell(row=r, column=col_ref).value or "").split("-", 1)[0].strip(),
+                "Dossier": dossier_num,
                 "Statut": statut,
             }
         )
