@@ -1,22 +1,23 @@
 """
-Application Streamlit — Suivi des contrôles CEE (fichier "Synthèse")
+Application Streamlit — Suivi et traitement des lots de contrôle CEE (fichier "Synthèse")
 
-Étapes :
-1. Import du fichier "Synthèse - <LOT>.xlsx"
-2. Tableau de copie rapide pour Odicée (REFERENCE interne / Conclusion de l'audit / Commentaires généraux)
-   sur les lignes dont la conclusion d'audit est renseignée.
-3. Calcul de la "Surface retenue dans la demande" pour les fiches BAR-EN-101/102/103/105, et
+Étapes (après import du fichier "Synthèse - <LOT>.xlsx") :
+1. Tableau de copie rapide pour Odicée (blocs "Contrôle sur site" / "Contrôle par contact").
+2. Calcul de la "Surface retenue dans la demande" pour les fiches BAR-EN-101/102/103/105, et
    correction proportionnelle des volumes (kWh cumac) quand la surface retenue diffère de la
    surface déclarée.
-4. Si au moins une surface a diminué : import de la/les fiche(s) BAR (export "Import lots de
-   travaux") pour y répercuter la surface retenue sur la ligne "ID lot de travaux" correspondante.
-5. Téléchargement des fichiers corrigés.
+3. Mise à jour de la/les fiche(s) BAR (export "Import lots de travaux") si une surface a diminué.
+4. Taux de contrôle du lot, comparaison aux seuils réglementaires (arrêté du 27/07/2026) et
+   catégorisation du lot (Cas 1/2/3).
+5. Export Excel par bailleur, avec commentaire généré selon le cas du lot.
+6. Génération des mails clients et ouverture d'un brouillon Outlook par bailleur.
 
 Tableau Odicée : REFERENCE interne de l'opération + Conclusion de l'audit + Conclusion du
 contrôle par contact.
 """
 
 import io
+import os
 import re
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -24,10 +25,17 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Alignment, Font, PatternFill
 
-st.set_page_config(page_title="Suivi contrôles CEE — QV580M", layout="wide")
+from cee_lots_data import get_seuils_fiche, parse_date_fr
+
+st.set_page_config(page_title="Traitement des lots CEE", layout="wide")
 
 FICHES_CONCERNEES = ("BAR-EN-101", "BAR-EN-102", "BAR-EN-103", "BAR-EN-105")
+
+
+def sanitize_filename(name):
+    return re.sub(r'[\\/*?:"<>|]', "", str(name)).strip()
 
 
 # --------------------------------------------------------------------------------------
@@ -503,3 +511,351 @@ if any_decrease:
                 )
             else:
                 st.info(f"{bf.name} : aucune ligne correspondant à un \"ID lot de travaux\" à corriger n'a été trouvée.")
+
+# ========================================================================================
+# Étape 4 — Taux de contrôle, conformité réglementaire et catégorisation du lot
+# ========================================================================================
+
+st.header(
+    "4. Taux de contrôle et conformité du lot",
+    help=(
+        "Taux de satisfaisant (site ou contact) = nombre de satisfaisant / nombre total "
+        "d'opérations du lot (toutes les lignes avec une REFERENCE interne).\n\n"
+        "Taux de non satisfaisant sur site = nombre de non satisfaisant sur site / nombre "
+        "de lignes avec une conclusion de contrôle sur site renseignée.\n\n"
+        "Les seuils réglementaires sont recherchés dans la table de l'arrêté du 27/07/2026 "
+        "pour la fiche BAR du lot, à la date d'engagement la plus récente."
+    ),
+)
+
+# Toutes les opérations du lot (une ligne = une opération dès que REFERENCE interne est renseignée)
+all_op_rows = []
+for r in range(header_row + 1, ws_read.max_row + 1):
+    ref_val = ws_read.cell(row=r, column=col_ref).value
+    if ref_val is not None and str(ref_val).strip() != "":
+        all_op_rows.append(r)
+
+total_ops = len(all_op_rows)
+
+
+def classify_conclusion(value):
+    v = normalize(value).lower() if value else ""
+    if not v:
+        return "non_visite"
+    if v == "satisfaisant":
+        return "satisfaisant"
+    if v == "non satisfaisant":
+        return "non_satisfaisant"
+    if "vérifiable" in v or "inaccessible" in v:
+        return "inaccessible"
+    return "autre"
+
+
+nb_satisfaisant_site = 0
+nb_non_satisfaisant_site = 0
+nb_controles_site = 0
+nb_satisfaisant_contact = 0
+fiche_lot = None
+dates_engagement = []
+
+col_date_engagement = find_col(headers, "DATE D'ENGAGEMENT")
+
+for r in all_op_rows:
+    cls_site = classify_conclusion(ws_read.cell(row=r, column=col_conclusion).value)
+    if cls_site != "non_visite":
+        nb_controles_site += 1
+    if cls_site == "satisfaisant":
+        nb_satisfaisant_site += 1
+    elif cls_site == "non_satisfaisant":
+        nb_non_satisfaisant_site += 1
+
+    if classify_conclusion(ws_read.cell(row=r, column=col_conclusion_contact).value) == "satisfaisant":
+        nb_satisfaisant_contact += 1
+
+    if fiche_lot is None:
+        f_val = ws_read.cell(row=r, column=col_fiche).value
+        if f_val and str(f_val).strip():
+            fiche_lot = str(f_val).strip()
+
+    if col_date_engagement:
+        d = parse_date_fr(ws_read.cell(row=r, column=col_date_engagement).value)
+        if d:
+            dates_engagement.append(d)
+
+taux_s_site = (nb_satisfaisant_site / total_ops * 100) if total_ops else 0.0
+taux_s_contact = (nb_satisfaisant_contact / total_ops * 100) if total_ops else 0.0
+taux_ns_site = (nb_non_satisfaisant_site / nb_controles_site * 100) if nb_controles_site else 0.0
+date_engagement_max = max(dates_engagement) if dates_engagement else None
+
+seuil_site, seuil_contact = get_seuils_fiche(fiche_lot, date_engagement_max) if fiche_lot and date_engagement_max else (None, None)
+
+col_info1, col_info2, col_info3 = st.columns(3)
+with col_info1:
+    st.metric("Fiche BAR du lot", fiche_lot or "—")
+with col_info2:
+    st.metric("Date d'engagement la plus récente", date_engagement_max.strftime("%d/%m/%Y") if date_engagement_max else "—")
+with col_info3:
+    seuil_txt = ""
+    if seuil_site is not None:
+        seuil_txt += f"Site ≥ {seuil_site:g}%"
+    if seuil_contact is not None:
+        seuil_txt += (" · " if seuil_txt else "") + f"Contact ≥ {seuil_contact:g}%"
+    st.metric("Seuils réglementaires trouvés", seuil_txt or "non trouvés")
+
+if fiche_lot and date_engagement_max and seuil_site is None and seuil_contact is None:
+    st.warning(
+        f"Aucun seuil trouvé dans la table de l'arrêté pour la fiche « {fiche_lot} » à la date "
+        f"{date_engagement_max.strftime('%d/%m/%Y')}. Vérifie le code de fiche ou complète la "
+        "table dans cee_lots_data.py."
+    )
+
+seuil_ns_max = st.number_input(
+    "Seuil maximal de non satisfaisant sur site (%)",
+    min_value=0.0, max_value=100.0, value=14.0, step=0.5,
+    help="Modifiable ponctuellement. Le taux de non satisfaisant du lot ne doit pas dépasser ce seuil.",
+)
+
+# --- Conformité du taux de satisfaisant ---
+site_ok = True if seuil_site is None else (taux_s_site >= seuil_site)
+if seuil_contact is None:
+    contact_ok = True
+else:
+    contact_ok_direct = taux_s_contact >= seuil_contact
+    if seuil_site is not None:
+        somme_ok = (taux_s_site + taux_s_contact) >= (seuil_site + seuil_contact)
+        contact_ok = contact_ok_direct or somme_ok
+    else:
+        contact_ok = contact_ok_direct
+taux_satisfaisant_conforme = site_ok and contact_ok
+
+# --- Conformité du taux de non satisfaisant ---
+ns_conforme = taux_ns_site <= seuil_ns_max
+
+# --- Catégorisation du lot ---
+if taux_satisfaisant_conforme and ns_conforme:
+    cas_lot = 1
+    conclusion_cas = "La totalité des opérations dans le lot est déposable."
+elif taux_satisfaisant_conforme and not ns_conforme:
+    cas_lot = 2
+    conclusion_cas = (
+        "On peut déposer toutes les opérations visitées seulement (toutes les cellules de "
+        "la colonne « Conclusion de l'audit » non vide)."
+    )
+else:
+    cas_lot = 3
+    conclusion_cas = (
+        "On ne peut déposer que les opérations contrôlées satisfaisantes et non satisfaisantes "
+        "(toutes les cellules de la colonne « Conclusion de l'audit » non vide, en enlevant les "
+        "inaccessibles par rapport au cas 2)."
+    )
+
+taux_cols = st.columns(3)
+with taux_cols[0]:
+    icone = "✅" if site_ok else "❌"
+    st.markdown(
+        f"**Taux satisfaisant sur site** {icone}  \n"
+        f"{taux_s_site:.1f} % ({nb_satisfaisant_site}/{total_ops})"
+        + (f" — seuil ≥ {seuil_site:g}%" if seuil_site is not None else " — pas de seuil pour cette fiche")
+    )
+with taux_cols[1]:
+    icone = "✅" if contact_ok else "❌"
+    st.markdown(
+        f"**Taux satisfaisant par contact** {icone}  \n"
+        f"{taux_s_contact:.1f} % ({nb_satisfaisant_contact}/{total_ops})"
+        + (f" — seuil ≥ {seuil_contact:g}%" if seuil_contact is not None else " — pas de seuil pour cette fiche")
+    )
+with taux_cols[2]:
+    icone = "✅" if ns_conforme else "❌"
+    st.markdown(
+        f"**Taux non satisfaisant sur site** {icone}  \n"
+        f"{taux_ns_site:.1f} % ({nb_non_satisfaisant_site}/{nb_controles_site}) — seuil ≤ {seuil_ns_max:g}%"
+    )
+
+cas_couleur = {1: "#e8f5e9", 2: "#fff3e0", 3: "#ffebee"}[cas_lot]
+st.markdown(
+    f"<div style='background-color:{cas_couleur}; padding:14px; border-radius:8px;'>"
+    f"<b>Cas {cas_lot}</b> — {conclusion_cas}</div>",
+    unsafe_allow_html=True,
+)
+
+# ========================================================================================
+# Étape 5 — Export Excel par bailleur
+# ========================================================================================
+
+st.header(
+    "5. Export Excel par bailleur",
+    help=(
+        "Un fichier par « RAISON SOCIALE du bénéficiaire de l'opération », avec les colonnes "
+        "REFERENCE interne / Nom du site / Adresse / Code postal / Ville / Conclusion sur site / "
+        "Conclusion par contact / Commentaire (généré selon le cas du lot)."
+    ),
+)
+
+col_i = find_col(headers, "RAISON SOCIALE du bénéficiaire")
+col_e = find_col(headers, "NOM DU SITE")
+col_f = find_col(headers, "ADRESSE de l'opération")
+col_g = find_col(headers, "CODE POSTAL")
+col_h = find_col(headers, "VILLE")
+
+if not all([col_i, col_e, col_f, col_g, col_h]):
+    st.error("Colonnes bailleur/adresse introuvables (RAISON SOCIALE / NOM DU SITE / ADRESSE / CODE POSTAL / VILLE).")
+else:
+    def build_commentaire(cls_site, commentaires_generaux, cas):
+        if cls_site == "satisfaisant":
+            return "L'opération sera valorisée dans ce lot"
+        if cls_site == "non_satisfaisant":
+            txt = str(commentaires_generaux).strip() if commentaires_generaux else ""
+            return txt or "Non satisfaisant sur site — voir Commentaires généraux"
+        if cls_site == "inaccessible":
+            if cas in (1, 2):
+                return "L'opération sera valorisée dans ce lot"
+            return "L'opération sera transférée dans un nouveau lot de contrôle si la date de fin de validité du dossier nous le permet"
+        # non_visite
+        if cas == 1:
+            return "L'opération sera valorisée dans ce lot"
+        return "L'opération sera transférée dans un nouveau lot de contrôle si l'opération nous le permet"
+
+    bailleurs = {}
+    for r in all_op_rows:
+        bailleur = ws_read.cell(row=r, column=col_i).value
+        bailleur = str(bailleur).strip() if bailleur else "(bailleur non renseigné)"
+
+        concl_site_val = ws_read.cell(row=r, column=col_conclusion).value
+        concl_contact_val = ws_read.cell(row=r, column=col_conclusion_contact).value
+        cls_site = classify_conclusion(concl_site_val)
+        commentaires_generaux_val = ws_read.cell(row=r, column=col_commentaires_generaux).value
+
+        bailleurs.setdefault(bailleur, []).append(
+            {
+                "REFERENCE interne de l'opération": ws_read.cell(row=r, column=col_ref).value,
+                "Nom du site": ws_read.cell(row=r, column=col_e).value,
+                "Adresse": ws_read.cell(row=r, column=col_f).value,
+                "Code postal": ws_read.cell(row=r, column=col_g).value,
+                "Ville": ws_read.cell(row=r, column=col_h).value,
+                "Conclusion du contrôle sur site": str(concl_site_val).strip() if concl_site_val and str(concl_site_val).strip() else "Non visité",
+                "Conclusion du contrôle par contact": str(concl_contact_val).strip() if concl_contact_val and str(concl_contact_val).strip() else "Non visité",
+                "Commentaire": build_commentaire(cls_site, commentaires_generaux_val, cas_lot),
+                "Dossier": str(ws_read.cell(row=r, column=col_ref).value or "").split("-", 1)[0].strip(),
+            }
+        )
+
+    COULEUR_COMMENTAIRE = {
+        "satisfaisant": "C6EFCE",
+        "non_satisfaisant": "FFC7CE",
+        "inaccessible": "FFE0B2",
+        "non_visite": "E0E0E0",
+    }
+
+    def build_excel_bailleur(lignes):
+        wb_b = openpyxl.Workbook()
+        ws_b = wb_b.active
+        ws_b.title = "Résultats contrôle"
+        headers_b = list(lignes[0].keys())
+        headers_b = [h for h in headers_b if h != "Dossier"]  # colonne technique, pas affichée
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill("solid", fgColor="2F5496")
+        for c, h in enumerate(headers_b, 1):
+            cell = ws_b.cell(row=1, column=c, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for r, ligne in enumerate(lignes, 2):
+            for c, h in enumerate(headers_b, 1):
+                cell = ws_b.cell(row=r, column=c, value=ligne[h])
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+            cls = classify_conclusion(ligne["Conclusion du contrôle sur site"] if ligne["Conclusion du contrôle sur site"] != "Non visité" else "")
+            color = COULEUR_COMMENTAIRE.get(cls)
+            if color:
+                for c in range(1, len(headers_b) + 1):
+                    ws_b.cell(row=r, column=c).fill = PatternFill("solid", fgColor=color)
+        widths = [22, 25, 30, 12, 18, 22, 22, 45]
+        for i, w in enumerate(widths[: len(headers_b)], 1):
+            ws_b.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+        buf_b = io.BytesIO()
+        wb_b.save(buf_b)
+        return buf_b.getvalue()
+
+    st.session_state["bailleurs_data"] = bailleurs
+    st.session_state["cas_lot"] = cas_lot
+    st.session_state["conclusion_cas"] = conclusion_cas
+
+    for bailleur, lignes in sorted(bailleurs.items()):
+        with st.expander(f"🏢 {bailleur} — {len(lignes)} opération(s)"):
+            st.dataframe(pd.DataFrame(lignes).drop(columns=["Dossier"]), use_container_width=True, hide_index=True)
+            xlsx_bytes_b = build_excel_bailleur(lignes)
+            st.download_button(
+                f"⬇️ Télécharger le tableau — {bailleur}",
+                data=xlsx_bytes_b,
+                file_name=f"{sanitize_filename(bailleur)}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_bailleur_{bailleur}",
+            )
+
+    # ====================================================================================
+    # Étape 6 — Génération et envoi des mails clients (Outlook)
+    # ====================================================================================
+
+    st.header(
+        "6. Génération des mails clients",
+        help=(
+            "Un mail par bailleur, avec le tableau correspondant en pièce jointe. Le corps du "
+            "message reprend la conclusion du cas du lot et la liste des dossiers du bailleur."
+        ),
+    )
+
+    guess_lot = re.sub(r"^Synth[eè]se\s*[-_]\s*", "", Path(synth_file.name).stem, flags=re.IGNORECASE).strip()
+    num_lot = st.text_input("Numéro de lot (pour l'objet du mail)", value=guess_lot)
+
+    for bailleur, lignes in sorted(bailleurs.items()):
+        dossiers = sorted({l["Dossier"] for l in lignes if l["Dossier"]})
+        liste_dossiers = "\n".join(f"- {d}" for d in dossiers)
+        corps = (
+            "Bonjour,\n\n"
+            f"Nous avons reçu les résultats du lot {num_lot}.\n\n"
+            "La conclusion du lot est la suivante :\n\n"
+            f"{conclusion_cas}\n\n"
+            "Voici la liste des dossiers concernés par l'opération :\n\n"
+            f"{liste_dossiers}\n\n"
+            "Vous trouverez ci-joint les résultats des contrôles pour vos opérations.\n\n"
+            "Votre interlocuteur EDF et nous-même restons disponibles.\n\n"
+            "Bien à vous,\n\n"
+            "L'équipe contrôle CEE,\n\n"
+            "PROMOTELEC-SERVICES"
+        )
+        subject = f"Retour de contrôle {num_lot}"
+
+        with st.expander(f"✉️ Mail — {bailleur}"):
+            st.text_area("Objet", value=subject, key=f"subject_{bailleur}", disabled=True)
+            st.text_area("Corps du message", value=corps, height=280, key=f"corps_{bailleur}")
+            to_address = st.text_input("Destinataire (facultatif, à compléter manuellement dans Outlook sinon)", key=f"to_{bailleur}")
+
+            if st.button(f"📧 Créer le brouillon Outlook — {bailleur}", key=f"outlook_{bailleur}"):
+                try:
+                    import tempfile
+                    import win32com.client as win32
+
+                    outlook = win32.Dispatch("Outlook.Application")
+                    mail_item = outlook.CreateItem(0)  # olMailItem
+                    mail_item.Subject = subject
+                    mail_item.Body = st.session_state.get(f"corps_{bailleur}", corps)
+                    if to_address.strip():
+                        mail_item.To = to_address.strip()
+
+                    xlsx_bytes_b = build_excel_bailleur(lignes)
+                    tmp_dir = tempfile.mkdtemp()
+                    attach_name = f"{sanitize_filename(bailleur)}.xlsx"
+                    attach_path = os.path.join(tmp_dir, attach_name)
+                    with open(attach_path, "wb") as fh:
+                        fh.write(xlsx_bytes_b)
+                    mail_item.Attachments.Add(attach_path)
+
+                    mail_item.Display()
+                    st.success(f"Brouillon Outlook ouvert pour {bailleur}. Vérifie le destinataire avant l'envoi.")
+                except ImportError:
+                    st.error(
+                        "pywin32 n'est pas installé, ou l'application ne tourne pas sur un poste "
+                        "Windows avec Outlook. Installe-le avec `pip install pywin32` et lance "
+                        "l'application en local sur le poste où Outlook est configuré."
+                    )
+                except Exception as e:
+                    st.error(f"Impossible d'ouvrir le brouillon Outlook : {e}")
