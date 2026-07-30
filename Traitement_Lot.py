@@ -833,7 +833,7 @@ else:
             "PROMOTELEC-SERVICES"
         )
         subject = f"Retour de contrôle {num_lot}"
-        attach_name = f"{sanitize_filename(bailleur)}.xlsx"
+        attach_name = f"{sanitize_filename(num_lot)} - {sanitize_filename(bailleur)}.xlsx"
         xlsx_bytes_b = build_excel_bailleur(lignes)
         mailto_url = f"mailto:?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
 
