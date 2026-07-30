@@ -16,6 +16,7 @@ Tableau Odicée : REFERENCE interne de l'opération + Conclusion de l'audit + Co
 contrôle par contact.
 """
 
+import base64
 import io
 import os
 import re
@@ -26,6 +27,7 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from cee_lots_data import get_seuils_fiche, parse_date_fr
@@ -856,14 +858,26 @@ else:
         )
 
         with st.expander(f"🏢 {bailleur} — {len(lignes)} opération(s)"):
-            bcol1, bcol2 = st.columns(2)
-            with bcol1:
-                st.link_button(f"📧 Envoyer le mail — {bailleur}", mailto_url)
-            with bcol2:
-                st.download_button(
-                    f"⬇️ Télécharger l'Excel — {bailleur}",
-                    data=xlsx_bytes_b,
-                    file_name=attach_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_bailleur_{bailleur}",
-                )
+            b64_xlsx = base64.b64encode(xlsx_bytes_b).decode("ascii")
+            components.html(
+                f"""
+                <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif;">
+                  <a id="mail-btn" href="{mailto_url}" target="_blank" rel="noopener"
+                     onclick="var b=document.getElementById('mail-btn'); b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Mail ouvert';"
+                     style="flex:1; text-align:center; padding:0.55em 1em; border-radius:8px;
+                            border:1px solid #d3d3d3; background:#f0f2f6; color:#31333F;
+                            text-decoration:none; font-size:14px; cursor:pointer; transition:background 0.15s;">
+                     📧 Envoyer le mail
+                  </a>
+                  <a id="dl-btn" href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64_xlsx}"
+                     download="{attach_name}"
+                     onclick="var b=document.getElementById('dl-btn'); b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Excel téléchargé';"
+                     style="flex:1; text-align:center; padding:0.55em 1em; border-radius:8px;
+                            border:1px solid #d3d3d3; background:#f0f2f6; color:#31333F;
+                            text-decoration:none; font-size:14px; cursor:pointer; transition:background 0.15s;">
+                     ⬇️ Télécharger l'Excel
+                  </a>
+                </div>
+                """,
+                height=60,
+            )
