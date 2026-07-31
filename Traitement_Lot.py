@@ -857,7 +857,10 @@ else:
             f"&subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
         )
 
-        with st.expander(f"🏢 {bailleur} — {len(lignes)} opération(s)"):
+        col_name, col_actions = st.columns([3, 2])
+        with col_name:
+            st.markdown(f"**🏢 {bailleur}** — {len(lignes)} opération(s)")
+        with col_actions:
             b64_xlsx = base64.b64encode(xlsx_bytes_b).decode("ascii")
             components.html(
                 f"""
@@ -881,3 +884,4 @@ else:
                 """,
                 height=60,
             )
+        st.divider()
