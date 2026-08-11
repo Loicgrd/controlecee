@@ -30,6 +30,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from cas_ns_actions import action_corrective_pour_ligne, charger_mapping_ns, regles_pour_fiche
 from cee_lots_data import get_seuils_fiche, parse_date_fr
 
 st.set_page_config(page_title="Traitement des lots CEE", layout="wide")
@@ -89,6 +90,39 @@ def find_col(headers, prefix):
         if _loosen(h).startswith(prefix_n):
             return c
     return None
+
+
+def find_col_last(headers, prefix):
+    """Retourne l'indice de la DERNIÈRE colonne dont l'en-tête commence par `prefix`.
+    Utile quand un intitulé de colonne existe deux fois dans le fichier (ex : « Commentaires
+    généraux » apparaît une fois sous « Données remplies par le bureau de contrôle » et une
+    seconde fois, plus loin, sous « Données complétées par le demandeur »)."""
+    prefix_n = _loosen(normalize(prefix))
+    last = None
+    for c, h in headers.items():
+        if _loosen(h).startswith(prefix_n):
+            last = c
+    return last
+
+
+def find_section_bounds(ws, section_prefix, header_row=1, max_col=None):
+    """Retourne (col_debut, col_fin) de la section dont le titre (ligne `header_row`,
+    généralement la ligne 1 des synthèses) commence par `section_prefix`. col_fin est la
+    colonne juste avant le titre de section suivant, ou la dernière colonne du fichier s'il
+    n'y en a pas. Retourne (None, None) si la section n'est pas trouvée."""
+    max_col = max_col or ws.max_column
+    section_starts = []
+    for c in range(1, max_col + 1):
+        v = ws.cell(row=header_row, column=c).value
+        if v and str(v).strip():
+            section_starts.append(c)
+    prefix_n = _loosen(normalize(section_prefix))
+    for i, c in enumerate(section_starts):
+        v = normalize(ws.cell(row=header_row, column=c).value)
+        if _loosen(v).startswith(prefix_n):
+            col_fin = section_starts[i + 1] - 1 if i + 1 < len(section_starts) else max_col
+            return c, col_fin
+    return None, None
 
 
 def to_number(v):
@@ -421,18 +455,6 @@ if has_surface_cols:
         with st.expander(f"{len(skipped)} ligne(s) ignorée(s) (surface non exploitable)"):
             st.dataframe(pd.DataFrame(skipped), use_container_width=True, hide_index=True)
 
-    # Fichier Synthèse mis à jour, prêt à télécharger
-    buf_synth = io.BytesIO()
-    wb_write.save(buf_synth)
-    synth_path = Path(synth_file.name)
-    synth_v2_name = f"{synth_path.stem} V2{synth_path.suffix}"
-    st.download_button(
-        "⬇️ Télécharger la Synthèse mise à jour",
-        data=buf_synth.getvalue(),
-        file_name=synth_v2_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
     # --------------------------------------------------------------------------------------
     # Étape 3 — Mise à jour de la/les fiche(s) BAR
     # --------------------------------------------------------------------------------------
@@ -581,12 +603,31 @@ nb_satisfaisant_contact = 0
 fiche_lot = None
 dates_engagement = []
 dates_achevement = []
+cls_site_par_ligne = {}
+actions_correctives_par_ligne = {}
 
 col_date_engagement = find_col(headers, "DATE D'ENGAGEMENT")
 col_date_achevement = find_col(headers, "DATE d'achèvement de l'opération")
 
+col_actions_correctives = find_col(headers, "Actions correctives menées suite à l'audit")
+col_preciser = find_col(headers, "Préciser selon le cas si nécessaire")
+col_commentaires_demandeur = find_col_last(headers, "Commentaires généraux")
+has_ns_cols = all([col_actions_correctives, col_preciser, col_commentaires_demandeur])
+if not has_ns_cols:
+    st.info(
+        "Colonnes « Actions correctives » / « Préciser selon le cas » / « Commentaires "
+        "généraux (demandeur) » introuvables dans ce fichier — le remplissage automatique "
+        "des motifs de non-satisfaisant est désactivé pour ce lot."
+    )
+
+bureau_controle_debut, bureau_controle_fin = find_section_bounds(
+    ws_read, "Données remplies par le bureau de contrôle"
+)
+ns_mapping = charger_mapping_ns()
+
 for r in all_op_rows:
     cls_site = classify_conclusion(ws_read.cell(row=r, column=col_conclusion).value)
+    cls_site_par_ligne[r] = cls_site
     if cls_site != "non_visite":
         nb_controles_site += 1
     if cls_site == "satisfaisant":
@@ -597,10 +638,9 @@ for r in all_op_rows:
     if classify_conclusion(cell_or_none(r, col_conclusion_contact)) == "satisfaisant":
         nb_satisfaisant_contact += 1
 
-    if fiche_lot is None:
-        f_val = ws_read.cell(row=r, column=col_fiche).value
-        if f_val and str(f_val).strip():
-            fiche_lot = str(f_val).strip()
+    row_fiche_val = ws_read.cell(row=r, column=col_fiche).value
+    if fiche_lot is None and row_fiche_val and str(row_fiche_val).strip():
+        fiche_lot = str(row_fiche_val).strip()
 
     if col_date_engagement:
         d = parse_date_fr(ws_read.cell(row=r, column=col_date_engagement).value)
@@ -612,6 +652,22 @@ for r in all_op_rows:
         if d2:
             dates_achevement.append(d2)
 
+    # Remplissage automatique de la colonne "Actions correctives" pour les opérations
+    # Non satisfaisant sur site, à partir des colonnes de la section "Données remplies par
+    # le bureau de contrôle..." et de la table de correspondance des motifs NS.
+    if has_ns_cols and cls_site == "non_satisfaisant" and bureau_controle_debut and ns_mapping:
+        regles_fiche = regles_pour_fiche(ns_mapping, row_fiche_val)
+        if regles_fiche:
+            valeurs_colonnes = {}
+            for c in range(bureau_controle_debut, bureau_controle_fin + 1):
+                h = headers.get(c)
+                if h:
+                    valeurs_colonnes[h] = ws_read.cell(row=r, column=c).value
+            texte_action = action_corrective_pour_ligne(regles_fiche, valeurs_colonnes)
+            if texte_action:
+                actions_correctives_par_ligne[r] = texte_action
+                ws_write.cell(row=r, column=col_actions_correctives).value = texte_action
+
 taux_s_site = (nb_satisfaisant_site / total_ops * 100) if total_ops else 0.0
 taux_s_contact = (nb_satisfaisant_contact / total_ops * 100) if total_ops else 0.0
 taux_ns_site = (nb_non_satisfaisant_site / nb_controles_site * 100) if nb_controles_site else 0.0
@@ -619,6 +675,43 @@ date_engagement_max = max(dates_engagement) if dates_engagement else None
 date_achevement_min = min(dates_achevement) if dates_achevement else None
 
 seuil_site, seuil_contact = get_seuils_fiche(fiche_lot, date_engagement_max) if fiche_lot and date_engagement_max else (None, None)
+
+# --- Conformité du taux de satisfaisant (nécessaire ici, avant la catégorisation Cas 1/2/3
+# affichée plus bas, car elle détermine aussi le remplissage des lignes non visitées) ---
+site_ok = True if seuil_site is None else (taux_s_site >= seuil_site)
+if seuil_contact is None:
+    contact_ok = True
+else:
+    contact_ok_direct = taux_s_contact >= seuil_contact
+    if seuil_site is not None:
+        contact_ok = contact_ok_direct or ((taux_s_site + taux_s_contact) >= (seuil_site + seuil_contact))
+    else:
+        contact_ok = contact_ok_direct
+taux_satisfaisant_conforme = site_ok and contact_ok
+
+# Lignes non visitées (Conclusion de l'audit vide) : si un des taux de satisfaisant n'est
+# pas atteint, on retire ces opérations du dossier.
+preciser_par_ligne = {}
+commentaires_demandeur_par_ligne = {}
+if has_ns_cols and not taux_satisfaisant_conforme:
+    for r in all_op_rows:
+        if cls_site_par_ligne.get(r) == "non_visite":
+            preciser_par_ligne[r] = "Opération retirée du dossier"
+            commentaires_demandeur_par_ligne[r] = "Un des taux règlementaires n'est pas atteint"
+            ws_write.cell(row=r, column=col_preciser).value = preciser_par_ligne[r]
+            ws_write.cell(row=r, column=col_commentaires_demandeur).value = commentaires_demandeur_par_ligne[r]
+
+# Fichier Synthèse mis à jour (surfaces/volumes + motifs NS + lignes retirées), prêt à télécharger
+buf_synth = io.BytesIO()
+wb_write.save(buf_synth)
+synth_path = Path(synth_file.name)
+synth_v2_name = f"{synth_path.stem} V2{synth_path.suffix}"
+st.download_button(
+    "⬇️ Télécharger la Synthèse mise à jour",
+    data=buf_synth.getvalue(),
+    file_name=synth_v2_name,
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 col_info1, col_info2, col_info3, col_info4 = st.columns(4)
 with col_info1:
@@ -651,19 +744,6 @@ seuil_ns_max = st.number_input(
     min_value=0.0, max_value=100.0, value=14.0, step=0.5,
     help="Modifiable ponctuellement. Le taux de non satisfaisant du lot ne doit pas dépasser ce seuil.",
 )
-
-# --- Conformité du taux de satisfaisant ---
-site_ok = True if seuil_site is None else (taux_s_site >= seuil_site)
-if seuil_contact is None:
-    contact_ok = True
-else:
-    contact_ok_direct = taux_s_contact >= seuil_contact
-    if seuil_site is not None:
-        somme_ok = (taux_s_site + taux_s_contact) >= (seuil_site + seuil_contact)
-        contact_ok = contact_ok_direct or somme_ok
-    else:
-        contact_ok = contact_ok_direct
-taux_satisfaisant_conforme = site_ok and contact_ok
 
 # --- Conformité du taux de non satisfaisant ---
 ns_conforme = taux_ns_site <= seuil_ns_max
@@ -786,6 +866,9 @@ else:
                 "Conclusion du contrôle sur site": str(concl_site_val).strip() if concl_site_val and str(concl_site_val).strip() else "Non visité",
                 "Conclusion du contrôle par contact": str(concl_contact_val).strip() if concl_contact_val and str(concl_contact_val).strip() else "Non visité",
                 "Commentaire": commentaire_txt,
+                "Actions correctives menées suite à l'audit": actions_correctives_par_ligne.get(r, ""),
+                "Préciser selon le cas si nécessaire": preciser_par_ligne.get(r, ""),
+                "Commentaires généraux (demandeur)": commentaires_demandeur_par_ligne.get(r, ""),
                 "Dossier": dossier_num,
                 "Statut": statut,
             }
@@ -818,7 +901,7 @@ else:
             if color:
                 for c in range(1, len(headers_b) + 1):
                     ws_b.cell(row=r, column=c).fill = PatternFill("solid", fgColor=color)
-        widths = [22, 25, 30, 12, 18, 22, 22, 45]
+        widths = [22, 25, 30, 12, 18, 22, 22, 45, 45, 30, 35]
         for i, w in enumerate(widths[: len(headers_b)], 1):
             ws_b.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
         buf_b = io.BytesIO()
