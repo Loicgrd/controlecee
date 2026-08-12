@@ -1,7 +1,9 @@
 """
 cas_ns_actions.py — Chargement de la table de correspondance "Motif NS -> Actions correctives"
-(fichier cas_NS_colonnes_exactes_v3.xlsx), utilisée pour compléter automatiquement la colonne
-"Actions correctives menées suite à l'audit..." des opérations Non satisfaisant.
+(fichier cas_NS_colonnes_exactes.xlsx), utilisée pour compléter automatiquement :
+- la colonne "Actions correctives menées suite à l'audit..." du tableau de synthèse,
+- la colonne "Action(s) corrective(s) nécessaire(s)" de l'Excel envoyé au bailleur,
+- les colonnes "Motif de non-conformité" et "Mot clé" du tableau NS (étape 6).
 
 Le fichier source doit se trouver dans le même dossier que ce module (déployé avec l'app).
 """
@@ -14,16 +16,19 @@ import streamlit as st
 
 from cee_lots_data import extract_fiche_code
 
-NS_FILE_DEFAULT = str(Path(__file__).parent / "cas_NS_colonnes_exactes_v3.xlsx")
+NS_FILE_DEFAULT = str(Path(__file__).parent / "cas_NS_colonnes_exactes.xlsx")
 
 HEADER_ROW = 4       # ligne d'en-têtes du fichier de correspondance
 FIRST_DATA_ROW = 5   # première ligne de données
 
-COL_MOTIF = 1     # A : Motif NS (nom exact de la colonne dans la matrice)
-COL_TRIGGER = 2   # B : Information déclenchant le NS
-COL_LETTRE = 3    # C : Colonne (lettre, informative seulement)
-COL_FICHES = 4    # D : Fiche CEE
-COL_ACTION = 5    # E : A remplir dans la colonne
+COL_MOTIF = 1                    # A : Motif NS (nom exact de la colonne dans la matrice)
+COL_TRIGGER = 2                  # B : Information déclenchant le NS
+COL_LETTRE = 3                   # C : Colonne (lettre, informative seulement)
+COL_FICHES = 4                   # D : Fiche CEE
+COL_ACTION_SYNTHESE = 5          # E : A remplir dans la colonne tableau de synthèse
+COL_ACTION_CLIENT = 6            # F : A remplir dans le tableau pour le client
+COL_MOTIF_NON_CONFORMITE = 7     # G : Motif de non-conformité
+COL_MOT_CLE = 8                  # H : Mot clé
 
 
 def _normalize_header(s):
@@ -36,16 +41,22 @@ def _normalize_header(s):
     return s.lstrip("*").strip()
 
 
+def _clean(v):
+    return str(v).strip() if v is not None and str(v).strip() else None
+
+
 @st.cache_data(show_spinner=False)
 def charger_mapping_ns(path: str = NS_FILE_DEFAULT):
     """Charge le fichier de correspondance en une liste de règles :
     [{"motif": <en-tête normalisé>, "trigger": <valeur déclenchante, en minuscules>,
-      "fiches": [<codes fiche propres>], "action": <texte à insérer>}, ...]
+      "fiches": [<codes fiche propres>], "action_synthese": str, "action_client": str,
+      "motif_non_conformite": str|None, "mot_cle": str|None}, ...]
     Retourne une liste vide (avec un avertissement Streamlit) si le fichier est introuvable."""
     if not Path(path).exists():
         st.warning(
             f"Fichier de correspondance des motifs NS introuvable ({Path(path).name}) — "
-            "la colonne « Actions correctives » ne sera pas complétée automatiquement."
+            "les colonnes liées aux motifs de non-conformité ne seront pas complétées "
+            "automatiquement."
         )
         return []
 
@@ -56,8 +67,11 @@ def charger_mapping_ns(path: str = NS_FILE_DEFAULT):
         motif = ws.cell(row=r, column=COL_MOTIF).value
         trigger = ws.cell(row=r, column=COL_TRIGGER).value
         fiche_cell = ws.cell(row=r, column=COL_FICHES).value
-        action = ws.cell(row=r, column=COL_ACTION).value
-        if not motif or not fiche_cell or not action:
+        action_synthese = ws.cell(row=r, column=COL_ACTION_SYNTHESE).value
+        action_client = ws.cell(row=r, column=COL_ACTION_CLIENT).value
+        motif_non_conformite = ws.cell(row=r, column=COL_MOTIF_NON_CONFORMITE).value
+        mot_cle = ws.cell(row=r, column=COL_MOT_CLE).value
+        if not motif or not fiche_cell or not (action_synthese or action_client):
             continue
         fiches = [extract_fiche_code(f) for f in str(fiche_cell).split(",") if f.strip()]
         fiches = [f for f in fiches if f]
@@ -68,7 +82,10 @@ def charger_mapping_ns(path: str = NS_FILE_DEFAULT):
                 "motif": _normalize_header(motif),
                 "trigger": str(trigger).strip().lower() if trigger is not None else "",
                 "fiches": fiches,
-                "action": str(action).strip(),
+                "action_synthese": _clean(action_synthese) or "",
+                "action_client": _clean(action_client) or "",
+                "motif_non_conformite": _clean(motif_non_conformite),
+                "mot_cle": _clean(mot_cle),
             }
         )
     return mapping
@@ -83,21 +100,39 @@ def regles_pour_fiche(mapping, fiche_brute):
     return [regle for regle in mapping if code in regle["fiches"]]
 
 
-def action_corrective_pour_ligne(regles_fiche, valeurs_colonnes):
+def regles_declenchees(regles_fiche, valeurs_colonnes):
     """
     regles_fiche : règles de mapping déjà filtrées pour la fiche de la ligne (regles_pour_fiche).
     valeurs_colonnes : dict {en-tête normalisé de colonne: valeur brute de la cellule} pour les
         colonnes de la section "Données remplies par le bureau de contrôle...".
-    Retourne le texte à écrire dans "Actions correctives..." (plusieurs motifs concaténés,
-    un par ligne), ou None si aucun motif ne correspond.
+    Retourne la liste des règles dont le motif correspond effectivement à la valeur de la
+    cellule sur cette ligne (peut être vide, une, ou plusieurs si NS multiples).
     """
-    textes = []
+    declenchees = []
     for regle in regles_fiche:
         valeur_cellule = valeurs_colonnes.get(regle["motif"])
         if valeur_cellule is None:
             continue
         valeur_normalisee = str(valeur_cellule).strip().lower()
         if valeur_normalisee == regle["trigger"]:
-            if regle["action"] not in textes:
-                textes.append(regle["action"])
+            declenchees.append(regle)
+    return declenchees
+
+
+def concatener_champ(regles_declenchees_liste, champ):
+    """Concatène (une ligne par motif, sans doublon) le champ demandé
+    ("action_synthese", "action_client", "motif_non_conformite" ou "mot_cle") pour toutes les
+    règles déclenchées. Retourne None si rien à concaténer."""
+    textes = []
+    for regle in regles_declenchees_liste:
+        valeur = regle.get(champ)
+        if valeur and valeur not in textes:
+            textes.append(valeur)
     return "\n".join(textes) if textes else None
+
+
+def action_corrective_pour_ligne(regles_fiche, valeurs_colonnes, champ="action_synthese"):
+    """Raccourci combinant regles_declenchees + concatener_champ (compatibilité et usage
+    simple). `champ` : "action_synthese" (par défaut, tableau de synthèse) ou "action_client"
+    (Excel envoyé au bailleur)."""
+    return concatener_champ(regles_declenchees(regles_fiche, valeurs_colonnes), champ)

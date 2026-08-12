@@ -21,6 +21,7 @@ import io
 import os
 import re
 import urllib.parse
+from datetime import date
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -30,8 +31,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from cas_ns_actions import action_corrective_pour_ligne, charger_mapping_ns, regles_pour_fiche
-from cee_lots_data import get_seuils_fiche, parse_date_fr
+from cas_ns_actions import charger_mapping_ns, concatener_champ, regles_declenchees, regles_pour_fiche
+from cee_lots_data import extract_fiche_code, get_seuils_fiche, parse_date_fr
 
 st.set_page_config(page_title="Traitement des lots CEE", layout="wide")
 
@@ -475,10 +476,14 @@ if has_surface_cols:
             "la surface retenue, sur la ligne dont l'\"ID lot de travaux\" correspond."
         )
 
-        rows_to_apply = [c for c in changes if c["Surface retenue"] != c["Surface déclarée"]]
+        surfaces_modifiees = [c for c in changes if c["Surface retenue"] != c["Surface déclarée"]]
+        rows_to_apply = [
+            c for c in surfaces_modifiees
+            if c["Écart (%)"] is not None and c["Écart (%)"] <= 10
+        ]
 
         dossier_fiches = {}
-        for c in rows_to_apply:
+        for c in surfaces_modifiees:
             if c["Dossier"]:
                 dossier_fiches.setdefault(c["Dossier"], set()).add(str(c["Fiche"]).strip())
 
@@ -605,6 +610,9 @@ dates_engagement = []
 dates_achevement = []
 cls_site_par_ligne = {}
 actions_correctives_par_ligne = {}
+actions_client_par_ligne = {}
+motif_non_conformite_par_ligne = {}
+mot_cle_par_ligne = {}
 
 col_date_engagement = find_col(headers, "DATE D'ENGAGEMENT")
 col_date_achevement = find_col(headers, "DATE d'achèvement de l'opération")
@@ -654,7 +662,9 @@ for r in all_op_rows:
 
     # Remplissage automatique de la colonne "Actions correctives" pour les opérations
     # Non satisfaisant sur site, à partir des colonnes de la section "Données remplies par
-    # le bureau de contrôle..." et de la table de correspondance des motifs NS.
+    # le bureau de contrôle..." et de la table de correspondance des motifs NS. On calcule
+    # en une passe les 4 champs (texte synthèse, texte client, motif, mot clé) pour éviter
+    # de refaire le matching plusieurs fois.
     if has_ns_cols and cls_site == "non_satisfaisant" and bureau_controle_debut and ns_mapping:
         regles_fiche = regles_pour_fiche(ns_mapping, row_fiche_val)
         if regles_fiche:
@@ -663,10 +673,64 @@ for r in all_op_rows:
                 h = headers.get(c)
                 if h:
                     valeurs_colonnes[h] = ws_read.cell(row=r, column=c).value
-            texte_action = action_corrective_pour_ligne(regles_fiche, valeurs_colonnes)
-            if texte_action:
-                actions_correctives_par_ligne[r] = texte_action
-                ws_write.cell(row=r, column=col_actions_correctives).value = texte_action
+            declenchees = regles_declenchees(regles_fiche, valeurs_colonnes)
+            texte_synthese = concatener_champ(declenchees, "action_synthese")
+            texte_client = concatener_champ(declenchees, "action_client")
+            texte_motif = concatener_champ(declenchees, "motif_non_conformite")
+            texte_mot_cle = concatener_champ(declenchees, "mot_cle")
+            if texte_synthese:
+                actions_correctives_par_ligne[r] = texte_synthese
+                ws_write.cell(row=r, column=col_actions_correctives).value = texte_synthese
+            if texte_client:
+                actions_client_par_ligne[r] = texte_client
+            if texte_motif:
+                motif_non_conformite_par_ligne[r] = texte_motif
+            if texte_mot_cle:
+                mot_cle_par_ligne[r] = texte_mot_cle
+
+# --------------------------------------------------------------------------------------
+# Colonnes "Grand Précaire / Précaire / Classique" et "Version du coup de pouce (CDP...)",
+# à remplir uniquement pour les fiches BAR-EN-101 et BAR-EN-103. Ajoutées à la suite de
+# "Commentaires généraux" (section "Données complétées par le demandeur") si absentes.
+# --------------------------------------------------------------------------------------
+LIBELLE_GPE = (
+    "Grand Précaire / Précaire / Classique à remplir différemment selon la période de la "
+    "charte CDP (GPE/PE/CL pour les chartes 2018, 2019 et 2020, i.e. opérations engagées "
+    "jusqu'au 31 mars 2021 ; GPE/CL pour les opérations engagées à partir du 1er avril 2021) "
+    "Réaliser des tableaux séparés par période de charte"
+)
+LIBELLE_CDP = "Version du coup de pouce (CDP 2018 / CDP 2019 / CDP 2020 / CDP 2021) A remplir pour tout le tableau"
+
+col_gpe = find_col(headers, "Grand Précaire / Précaire / Classique")
+col_cdp = find_col(headers, "Version du coup de pouce")
+
+if has_ns_cols and (not col_gpe or not col_cdp):
+    if col_commentaires_demandeur == ws_write.max_column:
+        insert_at = col_commentaires_demandeur + 1
+        ws_write.insert_cols(insert_at, amount=2)
+        col_gpe = col_gpe or insert_at
+        col_cdp = col_cdp or (insert_at + 1)
+        ws_write.cell(row=header_row, column=col_gpe).value = LIBELLE_GPE
+        ws_write.cell(row=header_row, column=col_cdp).value = LIBELLE_CDP
+    else:
+        st.info(
+            "Colonnes « Grand Précaire / Précaire / Classique » / « Version du coup de "
+            "pouce » absentes et non ajoutées automatiquement (« Commentaires généraux » "
+            "n'est pas la dernière colonne du fichier)."
+        )
+        col_gpe = col_cdp = None
+
+if has_ns_cols and col_gpe and col_cdp:
+    date_engagement_min = min(dates_engagement) if dates_engagement else None
+    for r in all_op_rows:
+        row_fiche_code = extract_fiche_code(ws_read.cell(row=r, column=col_fiche).value)
+        if row_fiche_code not in ("BAR-EN-101", "BAR-EN-103"):
+            continue
+        if date_engagement_min and date_engagement_min <= date(2021, 3, 31):
+            ws_write.cell(row=r, column=col_gpe).value = "GPE/PE/CL"
+        else:
+            ws_write.cell(row=r, column=col_gpe).value = "GPE/CL"
+        ws_write.cell(row=r, column=col_cdp).value = "SO"
 
 taux_s_site = (nb_satisfaisant_site / total_ops * 100) if total_ops else 0.0
 taux_s_contact = (nb_satisfaisant_contact / total_ops * 100) if total_ops else 0.0
@@ -698,9 +762,9 @@ else:
             contact_ok = contact_ok_direct
 taux_satisfaisant_conforme = site_ok and contact_ok
 
-# Lignes non visitées (Conclusion de l'audit vide) : si un des taux de satisfaisant n'est
-# pas atteint, on retire ces opérations du dossier — et on vide les colonnes qui ne doivent
-# plus être renseignées pour une opération retirée.
+# Lignes non visitées (Conclusion de l'audit vide) OU non vérifiables : si un des taux de
+# satisfaisant n'est pas atteint (donc dans le cas 3), on retire ces opérations du dossier —
+# et on vide les colonnes qui ne doivent plus être renseignées pour une opération retirée.
 col_raison_sociale_demandeur = find_col(headers, "RAISON SOCIALE du demandeur")
 col_siren_demandeur = find_col(headers, "SIREN du demandeur")
 colonnes_a_vider = [c for c in (col_raison_sociale_demandeur, col_siren_demandeur, col_vol_hp, col_vol_prec) if c]
@@ -709,7 +773,7 @@ preciser_par_ligne = {}
 commentaires_demandeur_par_ligne = {}
 if has_ns_cols and not taux_satisfaisant_conforme:
     for r in all_op_rows:
-        if cls_site_par_ligne.get(r) == "non_visite":
+        if cls_site_par_ligne.get(r) in ("non_visite", "inaccessible"):
             preciser_par_ligne[r] = "Opération retirée du dossier"
             commentaires_demandeur_par_ligne[r] = "Un des taux règlementaires n'est pas atteint"
             ws_write.cell(row=r, column=col_preciser).value = preciser_par_ligne[r]
@@ -827,8 +891,9 @@ st.header(
     "5. Export Excel et mail par bailleur",
     help=(
         "Un fichier par « RAISON SOCIALE du bénéficiaire de l'opération », avec les colonnes "
-        "Numéro dossier ODICEE / Nom du site / Adresse / Code postal / Ville / Conclusion sur site / "
-        "Conclusion par contact / Commentaire (généré selon le cas du lot).\n\n"
+        "Numéro dossier ODICEE / Adresse / Code postal / Ville / Conclusion sur site / "
+        "Conclusion par contact / Commentaire / Action(s) corrective(s) nécessaire(s) "
+        "(généré selon le cas du lot).\n\n"
         "Le bouton mail ouvre le client mail par défaut (objet + corps pré-remplis) ; la pièce "
         "jointe n'est pas ajoutée automatiquement (limite du lien mailto) — télécharge-la et "
         "joins-la manuellement."
@@ -877,16 +942,13 @@ else:
         bailleurs.setdefault(bailleur, []).append(
             {
                 "Numéro dossier ODICEE": dossier_num,
-                "Nom du site": ws_read.cell(row=r, column=col_e).value,
                 "Adresse": ws_read.cell(row=r, column=col_f).value,
                 "Code postal": ws_read.cell(row=r, column=col_g).value,
                 "Ville": ws_read.cell(row=r, column=col_h).value,
                 "Conclusion du contrôle sur site": str(concl_site_val).strip() if concl_site_val and str(concl_site_val).strip() else "Non visité",
                 "Conclusion du contrôle par contact": str(concl_contact_val).strip() if concl_contact_val and str(concl_contact_val).strip() else "Non visité",
                 "Commentaire": commentaire_txt,
-                "Actions correctives menées suite à l'audit": actions_correctives_par_ligne.get(r, ""),
-                "Préciser selon le cas si nécessaire": preciser_par_ligne.get(r, ""),
-                "Commentaires généraux (demandeur)": commentaires_demandeur_par_ligne.get(r, ""),
+                "Action(s) corrective(s) nécessaire(s)": actions_client_par_ligne.get(r, ""),
                 "Dossier": dossier_num,
                 "Statut": statut,
             }
@@ -919,7 +981,7 @@ else:
             if color:
                 for c in range(1, len(headers_b) + 1):
                     ws_b.cell(row=r, column=c).fill = PatternFill("solid", fgColor=color)
-        widths = [22, 25, 30, 12, 18, 22, 22, 45, 45, 30, 35]
+        widths = [22, 30, 12, 18, 22, 22, 45, 45]
         for i, w in enumerate(widths[: len(headers_b)], 1):
             ws_b.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
         buf_b = io.BytesIO()
@@ -930,28 +992,122 @@ else:
     st.session_state["cas_lot"] = cas_lot
     st.session_state["conclusion_cas"] = conclusion_cas
 
-    guess_lot = re.sub(r"^Synth[eè]se\s*[-_]\s*", "", Path(synth_file.name).stem, flags=re.IGNORECASE).strip()
+    guess_lot = re.sub(r"^Synth[eè]se[\s\-_]+", "", Path(synth_file.name).stem, flags=re.IGNORECASE).strip()
     num_lot = st.text_input("Numéro de lot (pour l'objet du mail)", value=guess_lot)
 
-    for bailleur, lignes in sorted(bailleurs.items()):
-        dossiers = sorted({l["Dossier"] for l in lignes if l["Dossier"]})
-        liste_dossiers = "\n".join(f"- {d}" for d in dossiers)
-        corps = (
-            "Bonjour,\n\n"
-            f"Nous avons reçu les résultats du lot {num_lot} ({fiche_lot}).\n\n"
-            "La conclusion du lot est la suivante :\n\n"
-            f"{conclusion_cas}\n\n"
-            "Voici la liste des dossiers concernés par l'opération :\n\n"
-            f"{liste_dossiers}\n\n"
-            "Vous trouverez ci-joint les résultats des contrôles pour vos opérations.\n\n"
-            "Votre interlocuteur EDF et nous-même restons disponibles.\n\n"
-            "Bien à vous,\n\n"
-            "L'équipe contrôle CEE,\n\n"
-            "PROMOTELEC-SERVICES"
+    def construire_corps_mail(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees):
+        lignes = ["Bonjour,", ""]
+        lignes.append(f"Pour votre information, nous avons reçu le retour du lot de contrôle {num_lot}.")
+        lignes.append("")
+        lignes.append("Résultat des dossiers : Vous trouverez ci-joint les résultats des contrôles pour vos opérations.")
+        lignes.append("")
+        lignes.append("Résultat du Lot :")
+        lignes.append("")
+        lignes.append(f"Taux de visite satisfaisante sur site : {'Atteint' if site_ok else 'Non-Atteint'}")
+        if ns_depasse:
+            lignes.append(f"Taux de visite non satisfaisante sur site supérieur aux {seuil_ns:g}% autorisés")
+        lignes.append("")
+        lignes.append("Conclusion :")
+        lignes.append("")
+
+        if cas == 1:
+            lignes.append(
+                "- Toutes les opérations (« Satisfaisant », « Non Vérifiables », « Non visité » "
+                "et « Non Satisfaisant », mais mise en conformité avant la date du prochain "
+                "dépôt au PNCEE) peuvent être validées dans ce lot."
+            )
+        elif cas == 2:
+            lignes.append(
+                "- Les opérations contrôlées (« Satisfaisant », « Non Vérifiables » et « Non "
+                "Satisfaisant » mais mise en conformité avant la date du prochain dépôt au "
+                "PNCEE) peuvent être validées dans ce lot."
+            )
+            lignes.append(
+                "- Les opérations « non visitées » ne peuvent pas être validées dans ce lot, "
+                f"car le taux d'opérations contrôlées non-satisfaisantes est supérieur à {seuil_ns:g} %."
+            )
+        else:
+            lignes.append(
+                "- Les opérations contrôlées (« Satisfaisant », et « Non Satisfaisant » mais "
+                "mise en conformité avant la date du prochain dépôt au PNCEE) peuvent être "
+                "validées dans ce lot."
+            )
+            lignes.append(
+                "- Les opérations « non visitées » et « non vérifiable » ne peuvent pas être "
+                "validées dans ce lot, car le taux d'opérations contrôlées non-satisfaisantes "
+                f"est supérieur à {seuil_ns:g} %."
+            )
+
+        if cas in (2, 3):
+            if cases.get("lot_destination"):
+                lignes.append(
+                    "- Les opérations non valorisées dans ce lot ont été transférées dans le "
+                    f"nouveau lot de contrôle {saisie_lot}."
+                )
+            if cases.get("dossier_destination"):
+                lignes.append(
+                    "- Les opérations non valorisées dans ce lot ont été transférées dans le "
+                    f"nouveau dossier {saisie_dossier}."
+                )
+
+        if cases.get("delai_insuffisant"):
+            lignes.append(
+                "- La date de fin de travaux du dossier inférieure à 3 mois et ne nous permet "
+                "pas de lancer un nouveau contrôle."
+            )
+        if cases.get("ah_non_recue"):
+            lignes.append("- L'attestation sur l'honneur n'a toujours pas été reçue.")
+        if cases.get("document_non_conforme"):
+            lignes.append("- Des documents sur le dossier ne sont pas conformes.")
+
+        lignes.append("")
+        if operations_controlees:
+            lignes.append(
+                "Les rapports de contrôles sont disponibles en téléchargement dans les pièces "
+                "jointes de chaque dossier ODICEE."
+            )
+            lignes.append("")
+        lignes.append("Votre interlocuteur EDF et nous-même restons disponibles.")
+        lignes.append("")
+        lignes.append("Bien à vous,")
+        return "\n".join(lignes)
+
+    for bailleur, lignes_b in sorted(bailleurs.items()):
+        cle = sanitize_filename(bailleur)
+        st.markdown(f"**🏢 {bailleur}** — {len(lignes_b)} opération(s)")
+
+        case_cols = st.columns(5) if cas_lot in (2, 3) else st.columns(3)
+        cases = {}
+        i = 0
+        if cas_lot in (2, 3):
+            with case_cols[i]:
+                cases["lot_destination"] = st.checkbox("Lot de destination", key=f"cb_lot_dest_{cle}")
+            i += 1
+            with case_cols[i]:
+                cases["dossier_destination"] = st.checkbox("Dossier de destination", key=f"cb_dossier_dest_{cle}")
+            i += 1
+        with case_cols[i]:
+            cases["delai_insuffisant"] = st.checkbox("Délais insuffisant", key=f"cb_delai_{cle}")
+        i += 1
+        with case_cols[i]:
+            cases["ah_non_recue"] = st.checkbox("Ah non reçue", key=f"cb_ah_{cle}")
+        i += 1
+        with case_cols[i]:
+            cases["document_non_conforme"] = st.checkbox("Document non conforme", key=f"cb_doc_{cle}")
+
+        saisie_lot = saisie_dossier = ""
+        if cases.get("lot_destination"):
+            saisie_lot = st.text_input("Numéro du nouveau lot de contrôle", key=f"saisie_lot_{cle}")
+        if cases.get("dossier_destination"):
+            saisie_dossier = st.text_input("Numéro du nouveau dossier", key=f"saisie_dossier_{cle}")
+
+        operations_controlees = any(l["Conclusion du contrôle sur site"] != "Non visité" for l in lignes_b)
+        corps = construire_corps_mail(
+            cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees
         )
         subject = f"Retour de contrôle {num_lot}"
-        attach_name = f"{sanitize_filename(num_lot)} - {sanitize_filename(bailleur)}.xlsx"
-        xlsx_bytes_b = build_excel_bailleur(lignes)
+        attach_name = f"{sanitize_filename(num_lot)} - {cle}.xlsx"
+        xlsx_bytes_b = build_excel_bailleur(lignes_b)
         cc_address = "controle.ceebs@promotelec-services.com"
         mailto_url = (
             f"mailto:?cc={urllib.parse.quote(cc_address)}"
@@ -960,7 +1116,8 @@ else:
 
         col_name, col_actions = st.columns([3, 2])
         with col_name:
-            st.markdown(f"**🏢 {bailleur}** — {len(lignes)} opération(s)")
+            with st.expander("Aperçu du corps du mail"):
+                st.text(corps)
         with col_actions:
             b64_xlsx = base64.b64encode(xlsx_bytes_b).decode("ascii")
             components.html(
@@ -986,3 +1143,116 @@ else:
                 height=60,
             )
         st.divider()
+
+    # ========================================================================================
+    # Étape 6 — Tableau NS (à copier-coller, sans en-têtes)
+    # ========================================================================================
+
+    st.header(
+        "6. Tableau NS à copier-coller",
+        help=(
+            "Une ligne par opération « Non satisfaisant » (Conclusion de l'audit), avec les "
+            "colonnes du modèle « Modèle_tableau_NS.xlsx ». Le bouton copie le tableau SANS "
+            "en-têtes, prêt à coller dans un Excel existant."
+        ),
+    )
+
+    def find_col_exact(headers, texte):
+        """Comme find_col, mais exige une correspondance EXACTE (pas juste un préfixe) —
+        utile pour un en-tête court comme « SIREN » qui serait sinon confondu avec « SIREN
+        du demandeur », « SIREN du professionnel », etc."""
+        cible = _loosen(normalize(texte))
+        for c, h in headers.items():
+            if _loosen(h) == cible:
+                return c
+        return None
+
+    col_siren_beneficiaire = find_col_exact(headers, "SIREN")
+    col_raison_professionnel = find_col(headers, "RAISON SOCIALE du professionnel")
+    col_siret_professionnel = find_col(headers, "SIRET de l'entreprise ayant réalisé l'opération")
+
+    colonnes_ns_manquantes = [
+        nom for nom, c in [
+            ("SIREN (bénéficiaire)", col_siren_beneficiaire),
+            ("RAISON SOCIALE du professionnel", col_raison_professionnel),
+            ("SIRET de l'entreprise ayant réalisé l'opération", col_siret_professionnel),
+        ] if not c
+    ]
+    if colonnes_ns_manquantes:
+        st.info("Colonnes introuvables pour le tableau NS : " + ", ".join(colonnes_ns_manquantes) + " — les cellules correspondantes resteront vides.")
+
+    lignes_ns = []
+    for r in all_op_rows:
+        if cls_site_par_ligne.get(r) != "non_satisfaisant":
+            continue
+        vol_hp_val = to_number(ws_read.cell(row=r, column=col_vol_hp).value) if col_vol_hp else None
+        vol_prec_val = to_number(ws_read.cell(row=r, column=col_vol_prec).value) if col_vol_prec else None
+        volume_mwhc = ""
+        if vol_hp_val is not None or vol_prec_val is not None:
+            volume_mwhc = round(((vol_hp_val or 0) + (vol_prec_val or 0)) * 0.001, 3)
+
+        fiche_brute_ligne = ws_read.cell(row=r, column=col_fiche).value
+        fiche_code_ligne = extract_fiche_code(fiche_brute_ligne) or ""
+        fiche_bar_sans_prefixe = re.sub(r"^(BAR|BAT)-", "", fiche_code_ligne)
+
+        lignes_ns.append(
+            [
+                ws_read.cell(row=r, column=col_ref).value or "",
+                ws_read.cell(row=r, column=col_f).value or "",
+                ws_read.cell(row=r, column=col_g).value or "",
+                ws_read.cell(row=r, column=col_h).value or "",
+                ws_read.cell(row=r, column=col_i).value or "",
+                (ws_read.cell(row=r, column=col_siren_beneficiaire).value or "") if col_siren_beneficiaire else "",
+                (ws_read.cell(row=r, column=col_raison_professionnel).value or "") if col_raison_professionnel else "",
+                (ws_read.cell(row=r, column=col_siret_professionnel).value or "") if col_siret_professionnel else "",
+                volume_mwhc,
+                "",  # Dossier d'origine de l'opération (Emmy)
+                num_lot,  # Lot de contrôle d'origine de l'opération
+                date.today().strftime("%d/%m/%Y"),  # Date de demande de mise en conformité
+                motif_non_conformite_par_ligne.get(r, ""),
+                "en cours",  # Actions correctives mises en œuvre
+                "",  # Type d'action corrective mise en œuvre
+                "",  # Date de réalisation des actions correctives
+                "",  # Référence interne de destination de l'opération
+                "",  # Dossier de destination de l'opération corrigée (Emmy)
+                "",  # Lot de contrôle secondaire de l'opération
+                mot_cle_par_ligne.get(r, ""),
+                "",  # Délai de réalisation des correctifs (en jours)
+                fiche_bar_sans_prefixe,
+            ]
+        )
+
+    entetes_ns = [
+        "Référence de l'opération", "Adresse de l'opération", "Code Postal", "Ville",
+        "Beneficiaire de l'opération", "SIREN benéficiaire", "Professionnel titulaire du signe de qualité",
+        "Siret Professionnel", "Volume en MWhc", "Dossier d'origine de l'opération (Emmy)",
+        "Lot de contrôle d'origine de l'opération", "Date de demande de mise en conformité",
+        "Motif de non-conformité", "Actions correctives mises en œuvre",
+        "Type d'action corrective mise en œuvre", "Date de réalisation des actions correctives",
+        "Référence interne de destination de l'opération", "Dossier de destination de l'opération corrigée (Emmy)",
+        "Lot de contrôle secondaire de l'opération", "Mot clé", "Délai de réalisation des correctifs (en jours)",
+        "Fiche BAR",
+    ]
+
+    if lignes_ns:
+        st.dataframe(pd.DataFrame(lignes_ns, columns=entetes_ns), use_container_width=True, hide_index=True)
+
+        tsv = "\n".join("\t".join(str(v) for v in ligne) for ligne in lignes_ns)
+        tsv_js = tsv.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+        components.html(
+            f"""
+            <div style="font-family:'Source Sans Pro', sans-serif;">
+              <button id="copy-ns-btn"
+                 onclick="navigator.clipboard.writeText(`{tsv_js}`); var b=document.getElementById('copy-ns-btn'); b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Tableau copié';"
+                 style="padding:0.55em 1.2em; border-radius:8px; border:1px solid #d3d3d3;
+                        background:#f0f2f6; color:#31333F; font-size:14px; cursor:pointer;
+                        transition:background 0.15s;">
+                 📋 Copier le tableau (sans en-têtes)
+              </button>
+            </div>
+            """,
+            height=50,
+        )
+    else:
+        st.info("Aucune opération « Non satisfaisant » dans ce lot — rien à copier.")
+
