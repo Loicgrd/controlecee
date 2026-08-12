@@ -675,22 +675,36 @@ date_engagement_max = max(dates_engagement) if dates_engagement else None
 date_achevement_min = min(dates_achevement) if dates_achevement else None
 
 seuil_site, seuil_contact = get_seuils_fiche(fiche_lot, date_engagement_max) if fiche_lot and date_engagement_max else (None, None)
+seuils_trouves = seuil_site is not None or seuil_contact is not None
 
 # --- Conformité du taux de satisfaisant (nécessaire ici, avant la catégorisation Cas 1/2/3
 # affichée plus bas, car elle détermine aussi le remplissage des lignes non visitées) ---
-site_ok = True if seuil_site is None else (taux_s_site >= seuil_site)
-if seuil_contact is None:
-    contact_ok = True
+if not seuils_trouves:
+    # Aucun seuil réglementaire trouvé pour cette fiche à cette date d'engagement (table de
+    # l'arrêté non renseignée pour cette période, ex : engagement antérieur à 2022) : on ne
+    # peut pas garantir la conformité, donc par prudence on considère que ce n'est PAS conforme
+    # plutôt que l'inverse.
+    site_ok = False
+    contact_ok = False
 else:
-    contact_ok_direct = taux_s_contact >= seuil_contact
-    if seuil_site is not None:
-        contact_ok = contact_ok_direct or ((taux_s_site + taux_s_contact) >= (seuil_site + seuil_contact))
+    site_ok = True if seuil_site is None else (taux_s_site >= seuil_site)
+    if seuil_contact is None:
+        contact_ok = True
     else:
-        contact_ok = contact_ok_direct
+        contact_ok_direct = taux_s_contact >= seuil_contact
+        if seuil_site is not None:
+            contact_ok = contact_ok_direct or ((taux_s_site + taux_s_contact) >= (seuil_site + seuil_contact))
+        else:
+            contact_ok = contact_ok_direct
 taux_satisfaisant_conforme = site_ok and contact_ok
 
 # Lignes non visitées (Conclusion de l'audit vide) : si un des taux de satisfaisant n'est
-# pas atteint, on retire ces opérations du dossier.
+# pas atteint, on retire ces opérations du dossier — et on vide les colonnes qui ne doivent
+# plus être renseignées pour une opération retirée.
+col_raison_sociale_demandeur = find_col(headers, "RAISON SOCIALE du demandeur")
+col_siren_demandeur = find_col(headers, "SIREN du demandeur")
+colonnes_a_vider = [c for c in (col_raison_sociale_demandeur, col_siren_demandeur, col_vol_hp, col_vol_prec) if c]
+
 preciser_par_ligne = {}
 commentaires_demandeur_par_ligne = {}
 if has_ns_cols and not taux_satisfaisant_conforme:
@@ -700,6 +714,8 @@ if has_ns_cols and not taux_satisfaisant_conforme:
             commentaires_demandeur_par_ligne[r] = "Un des taux règlementaires n'est pas atteint"
             ws_write.cell(row=r, column=col_preciser).value = preciser_par_ligne[r]
             ws_write.cell(row=r, column=col_commentaires_demandeur).value = commentaires_demandeur_par_ligne[r]
+            for c in colonnes_a_vider:
+                ws_write.cell(row=r, column=c).value = None
 
 # Fichier Synthèse mis à jour (surfaces/volumes + motifs NS + lignes retirées), prêt à télécharger
 buf_synth = io.BytesIO()
@@ -735,7 +751,9 @@ with col_info4:
 if fiche_lot and date_engagement_max and seuil_site is None and seuil_contact is None:
     st.warning(
         f"Aucun seuil trouvé dans la table de l'arrêté pour la fiche « {fiche_lot} » à la date "
-        f"{date_engagement_max.strftime('%d/%m/%Y')}. Vérifie le code de fiche ou complète la "
+        f"{date_engagement_max.strftime('%d/%m/%Y')} (période antérieure à la table, ou fiche "
+        "absente). Par prudence, le taux de satisfaisant est donc considéré comme **non "
+        "conforme** tant qu'aucun seuil n'est confirmé. Vérifie le code de fiche ou complète la "
         "table dans cee_lots_data.py."
     )
 
