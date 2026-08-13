@@ -1195,6 +1195,25 @@ else:
         fiche_code_ligne = extract_fiche_code(fiche_brute_ligne) or ""
         fiche_bar_sans_prefixe = re.sub(r"^(BAR|BAT)-", "", fiche_code_ligne)
 
+        # Les cellules concaténées (plusieurs motifs) utilisent un retour à la ligne en
+        # interne, ce qui casse le copier-coller dans Excel (crée des lignes en trop) : on
+        # remplace par un point-virgule pour cette table spécifiquement.
+        motif_txt = motif_non_conformite_par_ligne.get(r, "")
+        mot_cle_txt = mot_cle_par_ligne.get(r, "")
+        motif_pour_copie = motif_txt.replace("\n", "; ")
+        mots_cle_liste = mot_cle_txt.split("\n") if mot_cle_txt else []
+        mots_cle_liste = (mots_cle_liste + ["", "", "", ""])[:4]
+
+        date_debut_travaux = ""
+        if col_date_engagement:
+            d_eng = parse_date_fr(ws_read.cell(row=r, column=col_date_engagement).value)
+            date_debut_travaux = d_eng.strftime("%d/%m/%Y") if d_eng else ""
+
+        date_realisation_travaux = ""
+        if col_date_achevement:
+            d_ach = parse_date_fr(ws_read.cell(row=r, column=col_date_achevement).value)
+            date_realisation_travaux = d_ach.strftime("%d/%m/%Y") if d_ach else ""
+
         lignes_ns.append(
             [
                 ws_read.cell(row=r, column=col_ref).value or "",
@@ -1209,16 +1228,22 @@ else:
                 "",  # Dossier d'origine de l'opération (Emmy)
                 num_lot,  # Lot de contrôle d'origine de l'opération
                 date.today().strftime("%d/%m/%Y"),  # Date de demande de mise en conformité
-                motif_non_conformite_par_ligne.get(r, ""),
+                motif_pour_copie,
                 "en cours",  # Actions correctives mises en œuvre
                 "",  # Type d'action corrective mise en œuvre
                 "",  # Date de réalisation des actions correctives
                 "",  # Référence interne de destination de l'opération
                 "",  # Dossier de destination de l'opération corrigée (Emmy)
                 "",  # Lot de contrôle secondaire de l'opération
-                mot_cle_par_ligne.get(r, ""),
+                mot_cle_txt.replace("\n", "; "),
                 "",  # Délai de réalisation des correctifs (en jours)
                 fiche_bar_sans_prefixe,
+                mots_cle_liste[0],
+                mots_cle_liste[1],
+                mots_cle_liste[2],
+                mots_cle_liste[3],
+                date_debut_travaux,
+                date_realisation_travaux,
             ]
         )
 
@@ -1231,7 +1256,8 @@ else:
         "Type d'action corrective mise en œuvre", "Date de réalisation des actions correctives",
         "Référence interne de destination de l'opération", "Dossier de destination de l'opération corrigée (Emmy)",
         "Lot de contrôle secondaire de l'opération", "Mot clé", "Délai de réalisation des correctifs (en jours)",
-        "Fiche BAR",
+        "Fiche BAR", "Mot clé 1", "Mot clé 2", "Mot clé 3", "Mot clé 4",
+        "Date de début de travaux", "Date de réalisation des travaux",
     ]
 
     if lignes_ns:
