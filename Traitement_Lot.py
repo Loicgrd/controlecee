@@ -619,6 +619,10 @@ mot_cle_par_ligne = {}
 
 col_date_engagement = find_col(headers, "DATE D'ENGAGEMENT")
 col_date_achevement = find_col(headers, "DATE d'achèvement de l'opération")
+if not col_date_achevement and headers.get(18):
+    # Repli positionnel : cette colonne se trouve historiquement en colonne R (18), même
+    # quand son intitulé change d'un modèle de synthèse à l'autre (ex : "DATE DE LA FACTURE").
+    col_date_achevement = 18
 
 col_actions_correctives = find_col(headers, "Actions correctives menées suite à l'audit")
 col_preciser = find_col(headers, "Préciser selon le cas si nécessaire")
