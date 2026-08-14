@@ -1270,7 +1270,7 @@ else:
             components.html(
                 f"""
                 <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif; margin-top:6px; padding:2px;">
-                  <button id="copy-html-btn-{cle}"
+                  <button id="copy-html-btn"
                      style="width:100%; box-sizing:border-box; text-align:center; padding:0.6em 1em;
                             border-radius:8px; border:1px solid #d3d3d3; background:#f0f2f6;
                             color:#31333F; font-size:14px; line-height:1.4; cursor:pointer;
@@ -1289,7 +1289,7 @@ else:
                     }}
                     var htmlContent = b64ToUtf8(b64);
                     var plainContent = htmlContent.replace(/<[^>]+>/g, '');
-                    var btn = document.getElementById('copy-html-btn-{cle}');
+                    var btn = document.getElementById('copy-html-btn');
 
                     function ok() {{ btn.style.background='#c6efce'; btn.style.borderColor='#4caf50'; btn.innerHTML='✅ Copié — colle avec Ctrl+V dans le mail'; }}
                     function ko(detail) {{
