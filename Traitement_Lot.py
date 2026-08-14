@@ -23,6 +23,9 @@ import re
 import urllib.parse
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 
 import openpyxl
@@ -1072,6 +1075,111 @@ else:
         lignes.append("Bien à vous,")
         return "\n".join(lignes)
 
+    def construire_corps_mail_html(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees):
+        """Même contenu que construire_corps_mail, mais en HTML avec la mise en forme du
+        modèle Word (titres bleus soulignés, Atteint en vert gras, Non-Atteint et
+        dépassement de seuil en rouge)."""
+        def titre(txt):
+            return f'<p style="color:#4C94D8;text-decoration:underline;font-weight:bold;margin:12px 0 4px 0;">{txt}</p>'
+
+        def para(txt):
+            return f'<p style="margin:4px 0;">{txt}</p>'
+
+        html = ['<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000000;">']
+        html.append(para("Bonjour,"))
+        html.append(para(f"Pour votre information, nous avons reçu le retour du lot de contrôle <b>{num_lot}</b>."))
+        html.append(titre("Résultat des dossiers"))
+        html.append(para("Vous trouverez ci-joint les résultats des contrôles pour vos opérations."))
+        html.append(titre("Résultat du Lot"))
+        etat_txt = '<span style="color:#6FC040;font-weight:bold;">Atteint</span>' if site_ok else '<span style="color:#C00000;font-weight:bold;">Non-Atteint</span>'
+        html.append(para(f"Taux de visite satisfaisante sur site : {etat_txt}"))
+        if ns_depasse:
+            html.append(f'<p style="color:#C82613;font-weight:bold;margin:4px 0;">Taux de visite non satisfaisante sur site supérieur aux {seuil_ns:g}% autorisés</p>')
+        html.append(titre("Conclusion"))
+
+        puces = []
+        if cas == 1:
+            puces.append(
+                "Toutes les opérations (« Satisfaisant », « Non Vérifiables », « Non visité » "
+                "et « Non Satisfaisant », mais mise en conformité avant la date du prochain "
+                "dépôt au PNCEE) peuvent être validées dans ce lot."
+            )
+        elif cas == 2:
+            puces.append(
+                "Les opérations contrôlées (« Satisfaisant », « Non Vérifiables » et « Non "
+                "Satisfaisant » mais mise en conformité avant la date du prochain dépôt au "
+                "PNCEE) peuvent être validées dans ce lot."
+            )
+            puces.append(
+                "Les opérations « non visitées » ne peuvent pas être validées dans ce lot, "
+                f"car le taux d'opérations contrôlées non-satisfaisantes est supérieur à {seuil_ns:g} %."
+            )
+        else:
+            puces.append(
+                "Les opérations contrôlées (« Satisfaisant », et « Non Satisfaisant » mais "
+                "mise en conformité avant la date du prochain dépôt au PNCEE) peuvent être "
+                "validées dans ce lot."
+            )
+            puces.append(
+                "Les opérations « non visitées » et « non vérifiable » ne peuvent pas être "
+                "validées dans ce lot, car le taux d'opérations contrôlées non-satisfaisantes "
+                f"est supérieur à {seuil_ns:g} %."
+            )
+
+        if cas in (2, 3):
+            if cases.get("lot_destination"):
+                puces.append(
+                    "Les opérations non valorisées dans ce lot ont été transférées dans le "
+                    f"nouveau lot de contrôle {saisie_lot}."
+                )
+            if cases.get("dossier_destination"):
+                puces.append(
+                    "Les opérations non valorisées dans ce lot ont été transférées dans le "
+                    f"nouveau dossier {saisie_dossier}."
+                )
+
+        if cases.get("delai_insuffisant"):
+            puces.append(
+                "La date de fin de travaux du dossier inférieure à 3 mois et ne nous permet "
+                "pas de lancer un nouveau contrôle."
+            )
+        if cases.get("ah_non_recue"):
+            puces.append("L'attestation sur l'honneur n'a toujours pas été reçue.")
+        if cases.get("document_non_conforme"):
+            puces.append("Des documents sur le dossier ne sont pas conformes.")
+
+        html.append('<ul style="margin:4px 0;padding-left:20px;">')
+        for p in puces:
+            html.append(f"<li>{p}</li>")
+        html.append("</ul>")
+
+        if operations_controlees:
+            html.append(para(
+                "Les rapports de contrôles sont disponibles en téléchargement dans les pièces "
+                "jointes de chaque dossier ODICEE."
+            ))
+        html.append(para("Votre interlocuteur EDF et nous-même restons disponibles."))
+        html.append(para("Bien à vous,"))
+        html.append("</div>")
+        return "".join(html)
+
+    def construire_eml(destinataire, cc, sujet, corps_html, piece_jointe_bytes, piece_jointe_nom):
+        msg = MIMEMultipart()
+        msg["Subject"] = sujet
+        if destinataire:
+            msg["To"] = destinataire
+        if cc:
+            msg["Cc"] = cc
+        msg.attach(MIMEText(corps_html, "html", "utf-8"))
+        part = MIMEApplication(
+            piece_jointe_bytes,
+            _subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Name=piece_jointe_nom,
+        )
+        part["Content-Disposition"] = f'attachment; filename="{piece_jointe_nom}"'
+        msg.attach(part)
+        return msg.as_bytes()
+
     for bailleur, lignes_b in sorted(bailleurs.items()):
         cle = sanitize_filename(bailleur)
         st.markdown(f"**🏢 {bailleur}** — {len(lignes_b)} opération(s)")
@@ -1105,6 +1213,9 @@ else:
         corps = construire_corps_mail(
             cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees
         )
+        corps_html = construire_corps_mail_html(
+            cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees
+        )
         subject = f"Retour de contrôle {num_lot}"
         attach_name = f"{sanitize_filename(num_lot)} - {cle}.xlsx"
         xlsx_bytes_b = build_excel_bailleur(lignes_b)
@@ -1113,6 +1224,8 @@ else:
             f"mailto:?cc={urllib.parse.quote(cc_address)}"
             f"&subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
         )
+        eml_bytes = construire_eml("", cc_address, subject, corps_html, xlsx_bytes_b, attach_name)
+        eml_name = f"{sanitize_filename(num_lot)} - {cle}.eml"
 
         col_name, col_actions = st.columns([3, 2])
         with col_name:
@@ -1141,6 +1254,22 @@ else:
                 </div>
                 """,
                 height=60,
+            )
+            b64_eml = base64.b64encode(eml_bytes).decode("ascii")
+            components.html(
+                f"""
+                <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif; margin-top:6px;">
+                  <a id="eml-btn" href="data:message/rfc822;base64,{b64_eml}"
+                     download="{eml_name}"
+                     onclick="var b=document.getElementById('eml-btn'); b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Mail (.eml) téléchargé';"
+                     style="flex:1; text-align:center; padding:0.55em 1em; border-radius:8px;
+                            border:1px solid #d3d3d3; background:#f0f2f6; color:#31333F;
+                            text-decoration:none; font-size:14px; cursor:pointer; transition:background 0.15s;">
+                     ✉️ Télécharger le mail mis en forme (.eml, pièce jointe incluse)
+                  </a>
+                </div>
+                """,
+                height=55,
             )
         st.divider()
 
