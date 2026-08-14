@@ -1077,24 +1077,26 @@ else:
 
     def construire_corps_mail_html(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees):
         """Même contenu que construire_corps_mail, mais en HTML avec la mise en forme du
-        modèle Word (titres bleus soulignés, Atteint en vert gras, Non-Atteint et
-        dépassement de seuil en rouge)."""
+        modèle Word (titres bleus soulignés, ligne du taux en vert/rouge selon atteint ou
+        non, conclusion en bleu)."""
         def titre(txt):
-            return f'<p style="color:#4C94D8;text-decoration:underline;font-weight:bold;margin:12px 0 4px 0;">{txt}</p>'
+            return f'<p style="color:#4C94D8;text-decoration:underline;font-weight:bold;margin:18px 0 8px 0;line-height:1.5;">{txt}</p>'
 
         def para(txt):
-            return f'<p style="margin:4px 0;">{txt}</p>'
+            return f'<p style="margin:10px 0;line-height:1.5;">{txt}</p>'
 
-        html = ['<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000000;">']
+        html = ['<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;color:#000000;line-height:1.5;">']
         html.append(para("Bonjour,"))
         html.append(para(f"Pour votre information, nous avons reçu le retour du lot de contrôle <b>{num_lot}</b>."))
         html.append(titre("Résultat des dossiers"))
         html.append(para("Vous trouverez ci-joint les résultats des contrôles pour vos opérations."))
         html.append(titre("Résultat du Lot"))
-        etat_txt = '<span style="color:#6FC040;font-weight:bold;">Atteint</span>' if site_ok else '<span style="color:#C00000;font-weight:bold;">Non-Atteint</span>'
-        html.append(para(f"Taux de visite satisfaisante sur site : {etat_txt}"))
+        if site_ok:
+            html.append(f'<p style="color:#6FC040;font-weight:bold;margin:10px 0;line-height:1.5;">Taux de visite satisfaisante sur site : Atteint</p>')
+        else:
+            html.append(f'<p style="color:#C00000;font-weight:bold;margin:10px 0;line-height:1.5;">Taux de visite satisfaisante sur site : Non-Atteint</p>')
         if ns_depasse:
-            html.append(f'<p style="color:#C82613;font-weight:bold;margin:4px 0;">Taux de visite non satisfaisante sur site supérieur aux {seuil_ns:g}% autorisés</p>')
+            html.append(f'<p style="color:#C82613;font-weight:bold;margin:10px 0;line-height:1.5;">Taux de visite non satisfaisante sur site supérieur aux {seuil_ns:g}% autorisés</p>')
         html.append(titre("Conclusion"))
 
         puces = []
@@ -1148,9 +1150,9 @@ else:
         if cases.get("document_non_conforme"):
             puces.append("Des documents sur le dossier ne sont pas conformes.")
 
-        html.append('<ul style="margin:4px 0;padding-left:20px;">')
+        html.append('<ul style="margin:10px 0;padding-left:22px;color:#1F6FD6;">')
         for p in puces:
-            html.append(f"<li>{p}</li>")
+            html.append(f'<li style="margin:6px 0;line-height:1.5;">{p}</li>')
         html.append("</ul>")
 
         if operations_controlees:
