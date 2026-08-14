@@ -998,12 +998,17 @@ else:
     guess_lot = re.sub(r"^Synth[eè]se[\s\-_]+", "", Path(synth_file.name).stem, flags=re.IGNORECASE).strip()
     num_lot = st.text_input("Numéro de lot (pour l'objet du mail)", value=guess_lot)
 
-    def construire_corps_mail(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees):
+    def construire_corps_mail(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees, dossiers):
         lignes = ["Bonjour,", ""]
         lignes.append(f"Pour votre information, nous avons reçu le retour du lot de contrôle {num_lot}.")
         lignes.append("")
         lignes.append("Résultat des dossiers : Vous trouverez ci-joint les résultats des contrôles pour vos opérations.")
         lignes.append("")
+        if dossiers:
+            lignes.append("Liste des dossiers concernés :")
+            for d in dossiers:
+                lignes.append(f"- {d}")
+            lignes.append("")
         lignes.append("Résultat du Lot :")
         lignes.append("")
         lignes.append(f"Taux de visite satisfaisante sur site : {'Atteint' if site_ok else 'Non-Atteint'}")
@@ -1075,7 +1080,7 @@ else:
         lignes.append("Bien à vous,")
         return "\n".join(lignes)
 
-    def construire_corps_mail_html(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees):
+    def construire_corps_mail_html(cas, num_lot, site_ok, ns_depasse, seuil_ns, cases, saisie_lot, saisie_dossier, operations_controlees, dossiers):
         """Même contenu que construire_corps_mail, mais en HTML avec la mise en forme du
         modèle Word (titres bleus soulignés, ligne du taux en vert/rouge selon atteint ou
         non, conclusion en bleu)."""
@@ -1090,6 +1095,12 @@ else:
         html.append(para(f"Pour votre information, nous avons reçu le retour du lot de contrôle <b>{num_lot}</b>."))
         html.append(titre("Résultat des dossiers"))
         html.append(para("Vous trouverez ci-joint les résultats des contrôles pour vos opérations."))
+        if dossiers:
+            html.append(para("<b>Liste des dossiers concernés :</b>"))
+            html.append('<ul style="margin:6px 0;padding-left:22px;">')
+            for d in dossiers:
+                html.append(f'<li style="margin:2px 0;line-height:1.4;">{d}</li>')
+            html.append("</ul>")
         html.append(titre("Résultat du Lot"))
         if site_ok:
             html.append(f'<p style="color:#6FC040;font-weight:bold;margin:10px 0;line-height:1.5;">Taux de visite satisfaisante sur site : Atteint</p>')
@@ -1212,11 +1223,12 @@ else:
             saisie_dossier = st.text_input("Numéro du nouveau dossier", key=f"saisie_dossier_{cle}")
 
         operations_controlees = any(l["Conclusion du contrôle sur site"] != "Non visité" for l in lignes_b)
+        dossiers_bailleur = sorted({l["Dossier"] for l in lignes_b if l.get("Dossier")})
         corps = construire_corps_mail(
-            cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees
+            cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees, dossiers_bailleur
         )
         corps_html = construire_corps_mail_html(
-            cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees
+            cas_lot, num_lot, site_ok, not ns_conforme, seuil_ns_max, cases, saisie_lot, saisie_dossier, operations_controlees, dossiers_bailleur
         )
         subject = f"Retour de contrôle {num_lot}"
         attach_name = f"{sanitize_filename(num_lot)} - {cle}.xlsx"
