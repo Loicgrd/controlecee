@@ -1255,13 +1255,13 @@ else:
             )
             components.html(
                 f"""
-                <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif; margin-top:6px;">
+                <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif; margin-top:6px; padding:2px;">
                   <button id="copy-html-btn"
                      onclick="
                         var htmlContent = `{corps_html_js}`;
                         var plainContent = htmlContent.replace(/<[^>]+>/g, '');
                         var b = document.getElementById('copy-html-btn');
-                        function ok() {{ b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Texte copié — colle-le (Ctrl+V) dans le mail'; }}
+                        function ok() {{ b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Copié — colle avec Ctrl+V dans le mail'; }}
                         function ko() {{ b.style.background='#ffcccc'; b.style.borderColor='#c00000'; b.innerHTML='❌ Copie impossible sur ce navigateur'; }}
                         if (navigator.clipboard && window.ClipboardItem) {{
                           var blobHtml = new Blob([htmlContent], {{type: 'text/html'}});
@@ -1271,14 +1271,15 @@ else:
                           navigator.clipboard.writeText(plainContent).then(ok, ko);
                         }} else {{ ko(); }}
                      "
-                     style="flex:1; text-align:center; padding:0.55em 1em; border-radius:8px;
-                            border:1px solid #d3d3d3; background:#f0f2f6; color:#31333F;
-                            font-size:14px; cursor:pointer; transition:background 0.15s;">
-                     📋 Copier le texte mis en forme (à coller dans le mail)
+                     style="width:100%; box-sizing:border-box; text-align:center; padding:0.6em 1em;
+                            border-radius:8px; border:1px solid #d3d3d3; background:#f0f2f6;
+                            color:#31333F; font-size:14px; line-height:1.4; cursor:pointer;
+                            transition:background 0.15s; white-space:normal;">
+                     📋 Copier le texte mis en forme
                   </button>
                 </div>
                 """,
-                height=55,
+                height=90,
             )
         st.divider()
 
