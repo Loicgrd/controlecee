@@ -1276,16 +1276,58 @@ else:
                     var htmlContent = b64ToUtf8(b64);
                     var plainContent = htmlContent.replace(/<[^>]+>/g, '');
                     var btn = document.getElementById('copy-html-btn-{cle}');
-                    btn.addEventListener('click', function() {{
-                      function ok() {{ btn.style.background='#c6efce'; btn.style.borderColor='#4caf50'; btn.innerHTML='✅ Copié — colle avec Ctrl+V dans le mail'; }}
-                      function ko(e) {{ btn.style.background='#ffcccc'; btn.style.borderColor='#c00000'; btn.innerHTML='❌ Copie impossible sur ce navigateur'; }}
-                      if (navigator.clipboard && window.ClipboardItem) {{
+
+                    function ok() {{ btn.style.background='#c6efce'; btn.style.borderColor='#4caf50'; btn.innerHTML='✅ Copié — colle avec Ctrl+V dans le mail'; }}
+                    function ko(detail) {{
+                      btn.style.background='#ffcccc'; btn.style.borderColor='#c00000';
+                      btn.innerHTML='❌ Copie impossible sur ce navigateur';
+                      console.error('Copie du mail impossible :', detail);
+                    }}
+
+                    function copierViaSelection() {{
+                      var container = document.createElement('div');
+                      container.setAttribute('contenteditable', 'true');
+                      container.style.position = 'fixed';
+                      container.style.left = '-9999px';
+                      container.style.top = '0';
+                      container.innerHTML = htmlContent;
+                      document.body.appendChild(container);
+                      var selection = window.getSelection();
+                      var range = document.createRange();
+                      range.selectNodeContents(container);
+                      selection.removeAllRanges();
+                      selection.addRange(range);
+                      var reussi = false;
+                      try {{ reussi = document.execCommand('copy'); }} catch (err) {{ reussi = false; }}
+                      selection.removeAllRanges();
+                      document.body.removeChild(container);
+                      return reussi;
+                    }}
+
+                    function copierViaClipboardApi() {{
+                      try {{
                         var blobHtml = new Blob([htmlContent], {{type: 'text/html'}});
                         var blobText = new Blob([plainContent], {{type: 'text/plain'}});
-                        navigator.clipboard.write([new ClipboardItem({{'text/html': blobHtml, 'text/plain': blobText}})]).then(ok, ko);
-                      }} else if (navigator.clipboard) {{
-                        navigator.clipboard.writeText(plainContent).then(ok, ko);
-                      }} else {{ ko(); }}
+                        return navigator.clipboard.write([new ClipboardItem({{'text/html': blobHtml, 'text/plain': blobText}})]);
+                      }} catch (err) {{
+                        return Promise.reject(err);
+                      }}
+                    }}
+
+                    btn.addEventListener('click', function() {{
+                      if (copierViaSelection()) {{
+                        ok();
+                        return;
+                      }}
+                      if (navigator.clipboard && window.ClipboardItem) {{
+                        copierViaClipboardApi().then(ok, function(err) {{
+                          if (navigator.clipboard.writeText) {{
+                            navigator.clipboard.writeText(plainContent).then(ok, function(err2) {{ ko(err2); }});
+                          }} else {{ ko(err); }}
+                        }});
+                      }} else {{
+                        ko('execCommand et Clipboard API indisponibles');
+                      }}
                     }});
                   }})();
                 </script>
