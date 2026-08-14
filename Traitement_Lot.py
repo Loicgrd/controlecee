@@ -1221,11 +1221,9 @@ else:
         xlsx_bytes_b = build_excel_bailleur(lignes_b)
         cc_address = "controle.ceebs@promotelec-services.com"
         mailto_url = (
-            f"mailto:?cc={urllib.parse.quote(cc_address)}"
-            f"&subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(corps)}"
+            f"mailto:?cc={urllib.parse.quote(cc_address)}&subject={urllib.parse.quote(subject)}"
         )
-        eml_bytes = construire_eml("", cc_address, subject, corps_html, xlsx_bytes_b, attach_name)
-        eml_name = f"{sanitize_filename(num_lot)} - {cle}.eml"
+        corps_html_js = corps_html.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
         col_name, col_actions = st.columns([3, 2])
         with col_name:
@@ -1255,18 +1253,29 @@ else:
                 """,
                 height=60,
             )
-            b64_eml = base64.b64encode(eml_bytes).decode("ascii")
             components.html(
                 f"""
                 <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif; margin-top:6px;">
-                  <a id="eml-btn" href="data:message/rfc822;base64,{b64_eml}"
-                     download="{eml_name}"
-                     onclick="var b=document.getElementById('eml-btn'); b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Mail (.eml) téléchargé';"
+                  <button id="copy-html-btn"
+                     onclick="
+                        var htmlContent = `{corps_html_js}`;
+                        var plainContent = htmlContent.replace(/<[^>]+>/g, '');
+                        var b = document.getElementById('copy-html-btn');
+                        function ok() {{ b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Texte copié — colle-le (Ctrl+V) dans le mail'; }}
+                        function ko() {{ b.style.background='#ffcccc'; b.style.borderColor='#c00000'; b.innerHTML='❌ Copie impossible sur ce navigateur'; }}
+                        if (navigator.clipboard && window.ClipboardItem) {{
+                          var blobHtml = new Blob([htmlContent], {{type: 'text/html'}});
+                          var blobText = new Blob([plainContent], {{type: 'text/plain'}});
+                          navigator.clipboard.write([new ClipboardItem({{'text/html': blobHtml, 'text/plain': blobText}})]).then(ok, ko);
+                        }} else if (navigator.clipboard) {{
+                          navigator.clipboard.writeText(plainContent).then(ok, ko);
+                        }} else {{ ko(); }}
+                     "
                      style="flex:1; text-align:center; padding:0.55em 1em; border-radius:8px;
                             border:1px solid #d3d3d3; background:#f0f2f6; color:#31333F;
-                            text-decoration:none; font-size:14px; cursor:pointer; transition:background 0.15s;">
-                     ✉️ Télécharger le mail mis en forme (.eml, pièce jointe incluse)
-                  </a>
+                            font-size:14px; cursor:pointer; transition:background 0.15s;">
+                     📋 Copier le texte mis en forme (à coller dans le mail)
+                  </button>
                 </div>
                 """,
                 height=55,
