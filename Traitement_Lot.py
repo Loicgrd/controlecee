@@ -1223,7 +1223,7 @@ else:
         mailto_url = (
             f"mailto:?cc={urllib.parse.quote(cc_address)}&subject={urllib.parse.quote(subject)}"
         )
-        corps_html_js = corps_html.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+        corps_html_b64 = base64.b64encode(corps_html.encode("utf-8")).decode("ascii")
 
         col_name, col_actions = st.columns([3, 2])
         with col_name:
@@ -1256,21 +1256,7 @@ else:
             components.html(
                 f"""
                 <div style="display:flex; gap:12px; font-family:'Source Sans Pro', sans-serif; margin-top:6px; padding:2px;">
-                  <button id="copy-html-btn"
-                     onclick="
-                        var htmlContent = `{corps_html_js}`;
-                        var plainContent = htmlContent.replace(/<[^>]+>/g, '');
-                        var b = document.getElementById('copy-html-btn');
-                        function ok() {{ b.style.background='#c6efce'; b.style.borderColor='#4caf50'; b.innerHTML='✅ Copié — colle avec Ctrl+V dans le mail'; }}
-                        function ko() {{ b.style.background='#ffcccc'; b.style.borderColor='#c00000'; b.innerHTML='❌ Copie impossible sur ce navigateur'; }}
-                        if (navigator.clipboard && window.ClipboardItem) {{
-                          var blobHtml = new Blob([htmlContent], {{type: 'text/html'}});
-                          var blobText = new Blob([plainContent], {{type: 'text/plain'}});
-                          navigator.clipboard.write([new ClipboardItem({{'text/html': blobHtml, 'text/plain': blobText}})]).then(ok, ko);
-                        }} else if (navigator.clipboard) {{
-                          navigator.clipboard.writeText(plainContent).then(ok, ko);
-                        }} else {{ ko(); }}
-                     "
+                  <button id="copy-html-btn-{cle}"
                      style="width:100%; box-sizing:border-box; text-align:center; padding:0.6em 1em;
                             border-radius:8px; border:1px solid #d3d3d3; background:#f0f2f6;
                             color:#31333F; font-size:14px; line-height:1.4; cursor:pointer;
@@ -1278,6 +1264,31 @@ else:
                      📋 Copier le texte mis en forme
                   </button>
                 </div>
+                <script>
+                  (function() {{
+                    var b64 = "{corps_html_b64}";
+                    function b64ToUtf8(b) {{
+                      var binary = atob(b);
+                      var bytes = new Uint8Array(binary.length);
+                      for (var i = 0; i < binary.length; i++) {{ bytes[i] = binary.charCodeAt(i); }}
+                      return new TextDecoder('utf-8').decode(bytes);
+                    }}
+                    var htmlContent = b64ToUtf8(b64);
+                    var plainContent = htmlContent.replace(/<[^>]+>/g, '');
+                    var btn = document.getElementById('copy-html-btn-{cle}');
+                    btn.addEventListener('click', function() {{
+                      function ok() {{ btn.style.background='#c6efce'; btn.style.borderColor='#4caf50'; btn.innerHTML='✅ Copié — colle avec Ctrl+V dans le mail'; }}
+                      function ko(e) {{ btn.style.background='#ffcccc'; btn.style.borderColor='#c00000'; btn.innerHTML='❌ Copie impossible sur ce navigateur'; }}
+                      if (navigator.clipboard && window.ClipboardItem) {{
+                        var blobHtml = new Blob([htmlContent], {{type: 'text/html'}});
+                        var blobText = new Blob([plainContent], {{type: 'text/plain'}});
+                        navigator.clipboard.write([new ClipboardItem({{'text/html': blobHtml, 'text/plain': blobText}})]).then(ok, ko);
+                      }} else if (navigator.clipboard) {{
+                        navigator.clipboard.writeText(plainContent).then(ok, ko);
+                      }} else {{ ko(); }}
+                    }});
+                  }})();
+                </script>
                 """,
                 height=90,
             )
